@@ -2,49 +2,31 @@ name: Sync Upstream
 
 on:
   schedule:
-    # 每小时整点检测一次（UTC，GitHub 调度可能有数分钟抖动；可按需改频率）
+    # 每小时第 17 分钟自动检测并同步（避开整点拥堵）
     - cron: '17 * * * *'
-  issue_comment:
-    types: [created]
   workflow_dispatch:
-    inputs:
-      action:
-        description: '手动执行：check（检测并通知）或 sync（立即同步）'
-        type: choice
-        default: check
-        options:
-          - check
-          - sync
 
 concurrency:
   group: sync-upstream-main
   cancel-in-progress: false
 
-# 仅授予同步分支与管理通知 Issue 所需权限
 permissions:
   contents: write
-  issues: write
 
 jobs:
-  check:
-    name: 检测上游更新并通知
-    if: |
-      github.repository == 'phhh-xh/EnsoCode' &&
-      (
-        github.event_name == 'schedule' ||
-        (github.event_name == 'workflow_dispatch' && inputs.action == 'check')
-      )
+  auto-sync:
+    name: 自动同步上游 main
+    if: github.repository == 'phhh-xh/EnsoCode'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Check upstream and notify via Issue
+      - name: Check and merge upstream into main
         uses: actions/github-script@v8
         env:
           UPSTREAM_OWNER: J3n5en
           FORK_OWNER: phhh-xh
           REPO_NAME: EnsoCode
           BRANCH: main
-          SYNC_LABEL: ensocode-sync
           SYNC_TOKEN: ${{ secrets.FORK_SYNC_TOKEN || github.token }}
         with:
           script: |
@@ -54,7 +36,6 @@ jobs:
             const forkOwner = process.env.FORK_OWNER;
             const repoName = process.env.REPO_NAME;
             const branch = process.env.BRANCH;
-            const syncLabel = process.env.SYNC_LABEL;
             const token = (process.env.SYNC_TOKEN || '').trim();
 
             const getHeadSha = (owner) => {
@@ -72,208 +53,9 @@ jobs:
             const forkSha = getHeadSha(forkOwner);
             core.info(`upstream=${upstreamSha.slice(0, 7)}, fork=${forkSha.slice(0, 7)}`);
 
-            const { data: rawIssues } = await github.rest.issues.listForRepo({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              state: 'open',
-              labels: syncLabel,
-              per_page: 10,
-            });
-            const openIssues = rawIssues.filter((item) => !item.pull_request);
-
-            const closeStaleIssues = async (reason) => {
-              for (const issue of openIssues) {
-                await github.rest.issues.createComment({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: issue.number,
-                  body: reason,
-                });
-                await github.rest.issues.update({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: issue.number,
-                  state: 'closed',
-                  state_reason: 'completed',
-                });
-              }
-            };
-
             if (upstreamSha === forkSha) {
-              core.info('fork 已与上游完全一致，无需通知。');
-              await closeStaleIssues(
-                `检测到 \`${forkOwner}/${repoName}:${branch}\` 已与上游一致（\`${forkSha.slice(0, 7)}\`），自动关闭本通知。`
-              );
+              core.info('已是最新，无需同步。');
               return;
-            }
-
-            const compareUrl = `https://api.github.com/repos/${forkOwner}/${repoName}/compare/${forkOwner}:${branch}...${upstreamOwner}:${branch}`;
-            const baseHeaders = {
-              Accept: 'application/vnd.github+json',
-              'X-GitHub-Api-Version': '2022-11-28',
-            };
-            let res = await fetch(compareUrl, {
-              headers: token ? { ...baseHeaders, Authorization: `Bearer ${token}` } : baseHeaders,
-            });
-            if (!res.ok && token && [401, 403, 404].includes(res.status)) {
-              res = await fetch(compareUrl, { headers: baseHeaders });
-            }
-            if (!res.ok) {
-              throw new Error(`Compare API 失败 (${res.status}): ${await res.text()}`);
-            }
-            const compare = await res.json();
-
-            if (!compare.ahead_by || compare.ahead_by <= 0) {
-              core.info(`上游无新提交（fork 当前领先上游 ${compare.behind_by || 0} 个提交）。`);
-              await closeStaleIssues(
-                `检测到 \`${forkOwner}/${repoName}:${branch}\` 已包含上游全部提交（当前 HEAD \`${forkSha.slice(0, 7)}\`），自动关闭本通知。`
-              );
-              return;
-            }
-
-            const commits = Array.isArray(compare.commits) ? compare.commits : [];
-            const recent = commits.slice(-20).reverse();
-            const commitLines = recent.map((c) => {
-              const title = (c.commit?.message || '').split(/\r?\n/)[0];
-              // 不使用 @mention 上游作者，避免打扰对方
-              const author = c.author?.login || c.commit?.author?.name || 'unknown';
-              return `- [\`${c.sha.slice(0, 7)}\`](${c.html_url}) ${title} — \`${author}\``;
-            });
-
-            const behindNotice = compare.behind_by > 0
-              ? `\n> ℹ️ \`${forkOwner}/${repoName}:${branch}\` 当前领先上游 ${compare.behind_by} 个提交，同步时将生成 merge commit。\n`
-              : '';
-            const truncateNotice = compare.ahead_by > recent.length
-              ? `\n_仅展示最近 ${recent.length} 条，完整 ${compare.ahead_by} 条提交请查看 Compare 链接。_\n`
-              : '';
-
-            const title = `[Sync] 上游 ${branch} 有 ${compare.ahead_by} 个新提交待同步`;
-            const body = [
-              `@${context.repo.owner}`,
-              '',
-              `上游 \`${upstreamOwner}/${repoName}:${branch}\` 新增了 **${compare.ahead_by}** 个提交（最新 HEAD：\`${upstreamSha.slice(0, 7)}\`）。`,
-              behindNotice,
-              `对比完整差异：${compare.html_url}`,
-              '',
-              '### 最近提交',
-              ...commitLines,
-              truncateNotice,
-              '---',
-              `确认无误后，请直接在本 Issue 下回复 \`/sync\`（单独一行），工作流将自动合并上游到 \`${forkOwner}/${repoName}:${branch}\` 并关闭本 Issue。`,
-              '',
-              `<!-- upstream-sha:${upstreamSha} -->`,
-            ].join('\n');
-
-            if (openIssues.length > 0) {
-              const existing = openIssues[0];
-              const match = (existing.body || '').match(/<!-- upstream-sha:([0-9a-f]+) -->/);
-              if (match && match[1] === upstreamSha) {
-                core.info(`Issue #${existing.number} 已通知过 ${upstreamSha.slice(0, 7)}，跳过重复提醒。`);
-                return;
-              }
-              await github.rest.issues.update({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: existing.number,
-                title,
-                body,
-              });
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: existing.number,
-                body: `@${context.repo.owner} 上游又有新提交（当前共领先 **${compare.ahead_by}** 个提交，最新 \`${upstreamSha.slice(0, 7)}\`）。已更新上方列表，确认后回复 \`/sync\` 即可同步。`,
-              });
-              core.info(`已更新通知 Issue #${existing.number}`);
-              return;
-            }
-
-            const { data: created } = await github.rest.issues.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              title,
-              body,
-              labels: [syncLabel],
-              assignees: [context.repo.owner],
-            });
-            core.info(`已创建通知 Issue #${created.number}`);
-
-  sync:
-    name: 确认后同步上游到 main
-    if: |
-      github.repository == 'phhh-xh/EnsoCode' &&
-      (
-        (github.event_name == 'workflow_dispatch' && inputs.action == 'sync') ||
-        (
-          github.event_name == 'issue_comment' &&
-          github.event.issue.state == 'open' &&
-          !github.event.issue.pull_request &&
-          github.event.comment.user.login == github.repository_owner &&
-          contains(github.event.issue.labels.*.name, 'ensocode-sync') &&
-          contains(github.event.comment.body, '/sync')
-        )
-      )
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Merge upstream into fork main
-        uses: actions/github-script@v8
-        env:
-          FORK_OWNER: phhh-xh
-          REPO_NAME: EnsoCode
-          BRANCH: main
-          SYNC_LABEL: ensocode-sync
-          SYNC_TOKEN: ${{ secrets.FORK_SYNC_TOKEN || github.token }}
-          HAS_PAT: ${{ secrets.FORK_SYNC_TOKEN != '' }}
-        with:
-          script: |
-            const { execFileSync } = require('child_process');
-
-            const forkOwner = process.env.FORK_OWNER;
-            const repoName = process.env.REPO_NAME;
-            const branch = process.env.BRANCH;
-            const syncLabel = process.env.SYNC_LABEL;
-            const token = (process.env.SYNC_TOKEN || '').trim();
-            const hasPat = process.env.HAS_PAT === 'true';
-
-            const isComment = context.eventName === 'issue_comment';
-            const issueNumber = isComment ? context.payload.issue.number : null;
-
-            const replyIssue = async (body, close = false) => {
-              if (!issueNumber) return;
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: issueNumber,
-                body,
-              });
-              if (close) {
-                await github.rest.issues.update({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: issueNumber,
-                  state: 'closed',
-                  state_reason: 'completed',
-                });
-              }
-            };
-
-            if (isComment) {
-              const firstLine = (context.payload.comment.body || '').trim().split(/\r?\n/)[0].trim();
-              if (firstLine !== '/sync') {
-                core.info('评论首行不是 /sync，跳过。');
-                return;
-              }
-              try {
-                await github.rest.reactions.createForIssueComment({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  comment_id: context.payload.comment.id,
-                  content: 'rocket',
-                });
-              } catch (err) {
-                core.warning(`添加 reaction 失败（不影响同步）: ${err.message}`);
-              }
             }
 
             const res = await fetch(`https://api.github.com/repos/${forkOwner}/${repoName}/merge-upstream`, {
@@ -294,61 +76,11 @@ jobs:
             } catch {}
 
             if (!res.ok) {
-              let hint = '';
-              if (res.status === 409) {
-                hint = '\n原因：fork 的 `main` 与上游存在合并冲突，请在本地或网页手动解决。';
-              } else if ([401, 403, 422].includes(res.status)) {
-                hint = hasPat
-                  ? '\n请检查 Secret `FORK_SYNC_TOKEN` 是否过期，且具备本仓库 `Contents (Read and write)` 与 `Workflows (Read and write)` 权限。'
-                  : '\n当前使用默认 `GITHUB_TOKEN`，若上游修改了 `.github/workflows/*` 会触发权限限制：可直接在仓库主页点一次 **Sync fork**，或配置 Secret `FORK_SYNC_TOKEN`（Fine-grained PAT，勾选本仓库 `Contents` + `Workflows` 读写权限）。';
-              }
-              const errMsg = `❌ 同步失败（HTTP ${res.status}）：\`${data.message || rawText}\`${hint}`;
-              await replyIssue(errMsg);
-              core.setFailed(errMsg);
+              core.setFailed(`同步失败（HTTP ${res.status}）：${data.message || rawText}`);
               return;
             }
 
-            const latestOut = execFileSync(
-              'git',
-              ['ls-remote', `https://github.com/${forkOwner}/${repoName}.git`, `refs/heads/${branch}`],
-              { encoding: 'utf8' }
-            ).trim();
-            const latestSha = latestOut.split(/\s+/)[0] || '';
-            const shaText = latestSha
-              ? `[\`${latestSha.slice(0, 7)}\`](https://github.com/${forkOwner}/${repoName}/commit/${latestSha})`
-              : '未知';
-
-            const okMsg = [
-              `✅ 同步完成：\`${forkOwner}/${repoName}:${branch}\``,
-              `- 合并方式：\`${data.merge_type || 'unknown'}\``,
-              `- 当前 HEAD：${shaText}`,
-              `- 返回信息：${data.message || 'OK'}`,
-            ].join('\n');
-
-            if (isComment) {
-              await replyIssue(okMsg, true);
-            } else {
-              const { data: openIssues } = await github.rest.issues.listForRepo({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                state: 'open',
-                labels: syncLabel,
-                per_page: 10,
-              });
-              for (const issue of openIssues.filter((item) => !item.pull_request)) {
-                await github.rest.issues.createComment({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: issue.number,
-                  body: okMsg,
-                });
-                await github.rest.issues.update({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: issue.number,
-                  state: 'closed',
-                  state_reason: 'completed',
-                });
-              }
-            }
-            core.info(okMsg);
+            const newForkSha = getHeadSha(forkOwner);
+            core.info(
+              `✅ 已同步 ${forkOwner}/${repoName}:${branch} (${data.merge_type || 'unknown'}): ${forkSha.slice(0, 7)} -> ${newForkSha.slice(0, 7)}`
+            );
