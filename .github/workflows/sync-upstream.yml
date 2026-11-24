@@ -3,7 +3,7 @@ name: Sync Upstream
 on:
   schedule:
     # 每小时整点检测一次（UTC，GitHub 调度可能有数分钟抖动；可按需改频率）
-    - cron: '0 * * * *'
+    - cron: '17 * * * *'
   issue_comment:
     types: [created]
   workflow_dispatch:
