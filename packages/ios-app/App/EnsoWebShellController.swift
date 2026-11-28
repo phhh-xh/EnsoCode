@@ -49,6 +49,7 @@ final class EnsoWebShellController: NSObject, ObservableObject {
         wv.scrollView.contentInsetAdjustmentBehavior = .never
         wv.isOpaque = false
         wv.backgroundColor = .systemBackground
+        wv.hideFormInputAccessoryView()
         #if DEBUG
         if #available(iOS 16.4, *) {
             wv.isInspectable = true
