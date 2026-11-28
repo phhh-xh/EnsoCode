@@ -726,3 +726,70 @@ describe('createTrailingThrottle', () => {
     expect(run).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('画中画活跃态与桌面一致', () => {
+  const base = { activeId: 's1', connectionState: 'online', deviceLabel: '办公机', now: 1 };
+
+  it('精简版：回合结束但订阅会话的后台任务在跑 → 等待后台任务，不是已完成', () => {
+    const e = entry({ status: 'idle' });
+    const s = buildPipSnapshotFromGuestView({
+      ...base,
+      entry: e,
+      catalog: [e],
+      view: guestView({ status: 'idle', tasks: [{ taskId: 't', status: 'running' } as never] }),
+    });
+    expect(s).toMatchObject({ status: 'running', activity: 'background', runningCount: 1 });
+  });
+
+  it('精简版：目录标了 backgroundRunning（未订阅的会话）也算等后台；收尾后空闲', () => {
+    const e = entry({ status: 'idle', backgroundRunning: true });
+    const busy = buildPipSnapshotFromGuestView({
+      ...base,
+      entry: e,
+      catalog: [e],
+      view: undefined,
+    });
+    expect(busy).toMatchObject({ status: 'running', activity: 'background' });
+    const done = entry({ status: 'idle' });
+    const idle = buildPipSnapshotFromGuestView({
+      ...base,
+      entry: done,
+      catalog: [done],
+      view: guestView({ status: 'idle' }),
+    });
+    expect(idle).toMatchObject({ status: 'idle', activity: null, runningCount: 0 });
+  });
+
+  it('精简版：等提醒显示 reminder', () => {
+    const e = entry({ status: 'idle', parked: 'reminder' });
+    const s = buildPipSnapshotFromGuestView({ ...base, entry: e, catalog: [e], view: undefined });
+    expect(s).toMatchObject({ status: 'idle', activity: 'reminder' });
+  });
+
+  it('完整版：turn-completed 后后台任务仍在跑 → background，task-ended 后 idle', () => {
+    const tracker = deskTracker();
+    tracker.applyAgentEventPayload(
+      ev({ type: 'status', identity: identity('s1'), status: 'running' })
+    );
+    tracker.applyAgentEventPayload(
+      ev({
+        type: 'task-started',
+        identity: identity('s1'),
+        task: { taskId: 't', status: 'running' },
+      })
+    );
+    tracker.applyAgentEventPayload(ev({ type: 'turn-completed', identity: identity('s1') }));
+    expect(snap(tracker)).toMatchObject({
+      sessionId: 's1',
+      status: 'running',
+      activity: 'background',
+      runningCount: 1,
+    });
+    expect(
+      tracker.applyAgentEventPayload(
+        ev({ type: 'task-ended', identity: identity('s1'), taskId: 't', status: 'done' })
+      )
+    ).toBe(true);
+    expect(snap(tracker)).toMatchObject({ status: 'idle', activity: null, runningCount: 0 });
+  });
+});

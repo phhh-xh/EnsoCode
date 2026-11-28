@@ -122,7 +122,10 @@ export interface NativePipSnapshot {
   sessionId: string | null;
   title: string;
   projectName: string;
+  /** 旧 App 只认这五个词（未知词画成「已完成」），等后台任务仍报 running、等提醒仍报 idle */
   status: 'running' | 'pending' | 'idle' | 'failed' | 'offline';
+  /** 细分：回合已结束、后台任务仍在跑 / 等提醒。新 App 据此显示「等待后台任务」「等待提醒」，旧 App 忽略 */
+  activity?: 'background' | 'reminder' | null;
   pendingHint: string | null;
   pendingDetail?: NativePipPendingDetail | null;
   todo?: NativePipTodoSummary | null;

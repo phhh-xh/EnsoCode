@@ -12,6 +12,7 @@ import type {
 } from '@enso/pair';
 import { parseCompactCommand } from '@shared/compactCommand';
 import { emptyGuestView } from '@shared/pair/guestProjection';
+import { withChildBackground } from '@shared/pair/sessionActivity';
 import type { AttachedImage } from '@shared/types/agent';
 import { PanelLeft, Smartphone } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -440,7 +441,8 @@ export function App() {
         if (error === READ_ONLY_ERROR) rejectedReadOnly();
       },
       onCatalog: (entries, order) => {
-        setCatalog(entries);
+        // 旧桌面不发 backgroundRunning：先用 coworker 子会话补齐，抽屉 / 小组件 / 画中画同一份
+        setCatalog(withChildBackground(entries));
         setPinnedOrder(order ?? []);
       },
       onProjects: (next, groups) => {

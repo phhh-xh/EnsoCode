@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  catalogBackgroundRunning,
   catalogEntryFromPairSession,
   catalogParked,
   catalogQueued,
@@ -92,5 +93,34 @@ describe('headless catalog', () => {
     expect(catalogParked({ status: 'running' }, soon, now)).toBeUndefined();
     expect(catalogParked({ status: 'idle' }, [{ dueAt: now - 10 * 60_000 }], now)).toBeUndefined();
     expect(catalogParked({ status: 'idle' }, undefined, now)).toBeUndefined();
+  });
+});
+
+describe('catalogBackgroundRunning', () => {
+  const tasks = (status: string) => [{ status }];
+
+  it('与桌面侧栏同口径：后台命令、子代理、coworker 子会话在跑都标 true', () => {
+    expect(
+      catalogBackgroundRunning({ status: 'idle', backgroundTasks: tasks('running') }, {})
+    ).toBe(true);
+    expect(catalogBackgroundRunning({ status: 'idle', subagents: tasks('running') }, {})).toBe(
+      true
+    );
+    expect(
+      catalogBackgroundRunning(
+        { status: 'idle', coworkerIds: ['p::c'] },
+        { 'p::c': { status: 'running' } }
+      )
+    ).toBe(true);
+  });
+
+  it('都收尾了不带字段（旧手机照常忽略，帧体积不涨）', () => {
+    expect(
+      catalogBackgroundRunning(
+        { status: 'idle', backgroundTasks: tasks('done'), subagents: tasks('completed') },
+        {}
+      )
+    ).toBeUndefined();
+    expect(catalogBackgroundRunning({ coworkerIds: ['gone'] }, {})).toBeUndefined();
   });
 });

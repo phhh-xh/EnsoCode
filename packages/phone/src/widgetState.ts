@@ -1,4 +1,9 @@
 import type { CatalogEntry } from '@enso/pair';
+import {
+  activityKeepsLive,
+  type PairSessionActivity,
+  pairSessionActivity,
+} from '@shared/pair/sessionActivity';
 import type { NativeWidgetSessionItem, NativeWidgetSnapshot } from './nativeBridge';
 
 /** 前端推送到 iOS 小组件 / 灵动岛的状态快照聚合器（纯函数，便于单测） */
@@ -17,44 +22,60 @@ function pendingOf(entry: CatalogEntry): number {
   return (entry.pendingApprovalCount ?? 0) + (entry.pendingAskCount ?? 0);
 }
 
-function rankEntry(entry: CatalogEntry): number {
-  if (pendingOf(entry) > 0) return 3;
-  if (entry.status === 'running') return 2;
-  if (entry.unread) return 1;
-  return 0;
+/** 原生侧的会话状态词：waiting / running / background / reminder / failed / queued / idle（未知词按已完成画） */
+function nativeStatus(activity: PairSessionActivity): string {
+  return activity === 'unread' ? 'idle' : activity;
 }
+
+const RANK: Record<PairSessionActivity, number> = {
+  waiting: 5,
+  running: 4,
+  background: 3,
+  reminder: 2,
+  unread: 1,
+  failed: 1,
+  queued: 0,
+  idle: 0,
+};
 
 export function buildWidgetSnapshotFromCatalog(input: PhoneWidgetInput): NativeWidgetSnapshot {
   const now = input.now ?? Date.now();
-  const visible = input.catalog.filter((c) => !c.archived && !c.parentId);
+  const visible = input.catalog
+    .filter((c) => !c.archived && !c.parentId)
+    .map((entry) => ({ entry, activity: pairSessionActivity(entry) }));
 
+  // runningCount 含等后台任务：旧 App 按它决定灵动岛是否收起，等后台时不能被当成已完成
   let runningCount = 0;
+  let ownRunning = 0;
   let pendingCount = 0;
   let unreadCount = 0;
-  for (const entry of visible) {
-    if (entry.status === 'running') runningCount += 1;
+  let reminderCount = 0;
+  for (const { entry, activity } of visible) {
+    // 待确认的会话自身也在跑（卡在审批上），与原口径一样计入运行数
+    if (entry.status === 'running' || activity === 'background') runningCount += 1;
+    if (entry.status === 'running') ownRunning += 1;
+    if (activity === 'reminder') reminderCount += 1;
     pendingCount += pendingOf(entry);
     if (entry.unread) unreadCount += 1;
   }
 
   const sorted = [...visible].sort((a, b) => {
-    const diff = rankEntry(b) - rankEntry(a);
+    const diff = RANK[b.activity] - RANK[a.activity];
     if (diff !== 0) return diff;
-    return (b.updatedAt ?? 0) - (a.updatedAt ?? 0);
+    return (b.entry.updatedAt ?? 0) - (a.entry.updatedAt ?? 0);
   });
 
-  const focus =
-    sorted.find((c) => pendingOf(c) > 0) ??
-    sorted.find((c) => c.status === 'running') ??
-    visible.find((c) => c.id === input.activeId) ??
-    sorted[0] ??
-    null;
+  const focusRow =
+    sorted.find((c) => activityKeepsLive(c.activity)) ??
+    visible.find((c) => c.entry.id === input.activeId) ??
+    sorted[0];
+  const focus = focusRow?.entry ?? null;
 
-  const sessions: NativeWidgetSessionItem[] = sorted.slice(0, 6).map((c) => ({
+  const sessions: NativeWidgetSessionItem[] = sorted.slice(0, 6).map(({ entry: c, activity }) => ({
     id: c.id,
     title: c.title || '未命名会话',
     projectName: c.projectName || input.deviceLabel,
-    status: pendingOf(c) > 0 ? 'waiting' : c.status,
+    status: nativeStatus(activity),
     pendingCount: pendingOf(c),
     unread: Boolean(c.unread),
     updatedAt: c.updatedAt ?? now,
@@ -63,23 +84,31 @@ export function buildWidgetSnapshotFromCatalog(input: PhoneWidgetInput): NativeW
   const activeStatus =
     pendingCount > 0
       ? 'pending'
-      : runningCount > 0
+      : ownRunning > 0
         ? 'running'
-        : input.connectionState === 'online'
-          ? 'idle'
-          : 'offline';
+        : runningCount > 0
+          ? 'background'
+          : input.connectionState !== 'online'
+            ? 'offline'
+            : reminderCount > 0
+              ? 'reminder'
+              : 'idle';
 
   const activeDetail =
     input.activeDetail ??
     (pendingCount > 0
       ? `有 ${pendingCount} 项待确认`
-      : runningCount > 0
+      : activeStatus === 'running'
         ? runningCount > 1
           ? `${runningCount} 个会话运行中`
           : 'Agent 执行中'
-        : input.connectionState === 'online'
-          ? '已连接，暂无运行中任务'
-          : '等待重连桌面端');
+        : activeStatus === 'background'
+          ? '等待后台任务'
+          : activeStatus === 'offline'
+            ? '等待重连桌面端'
+            : activeStatus === 'reminder'
+              ? '等待提醒'
+              : '已连接，暂无运行中任务');
 
   return {
     deviceLabel: input.deviceLabel || 'EnsoCode',
@@ -124,6 +153,9 @@ interface LiveSessionRuntime {
   status: string;
   approvals: Set<string>;
   asks: Set<string>;
+  /** 运行中的后台命令 / 子代理：回合结束后它们还在跑，会话算等后台任务 */
+  tasks: Set<string>;
+  subagents: Set<string>;
   detail?: string;
   startedAt?: number;
   updatedAt: number;
@@ -131,6 +163,26 @@ interface LiveSessionRuntime {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** 列表里 status === 'running' 的条目 id（idKey：任务是 taskId，子代理是 id） */
+function runningIds(list: unknown, idKey: 'taskId' | 'id'): Set<string> {
+  const out = new Set<string>();
+  if (!Array.isArray(list)) return out;
+  for (const item of list) {
+    if (isRecord(item) && item.status === 'running' && typeof item[idKey] === 'string')
+      out.add(item[idKey]);
+  }
+  return out;
+}
+
+/** 把一个 id 按是否仍在跑写进集合，返回集合是否变了 */
+function toggle(set: Set<string>, id: unknown, running: boolean): boolean {
+  if (typeof id !== 'string' || !id) return false;
+  if (running === set.has(id)) return false;
+  if (running) set.add(id);
+  else set.delete(id);
+  return true;
 }
 
 function basenameOfPath(path: string): string {
@@ -348,6 +400,8 @@ export class DeskWidgetTracker {
           status,
           approvals,
           asks,
+          tasks: runningIds(snap.backgroundTasks, 'taskId'),
+          subagents: runningIds(snap.subagents, 'id'),
           detail,
           startedAt: status === 'running' ? (prev?.startedAt ?? now) : undefined,
           updatedAt: now,
@@ -371,6 +425,8 @@ export class DeskWidgetTracker {
         status: 'idle',
         approvals: new Set(),
         asks: new Set(),
+        tasks: new Set(),
+        subagents: new Set(),
         updatedAt: now,
       };
       this.live.set(sid, created);
@@ -378,6 +434,27 @@ export class DeskWidgetTracker {
     };
 
     switch (type) {
+      case 'task-started': {
+        const task = isRecord(event.task) ? event.task : null;
+        return toggle(ensure().tasks, task?.taskId, task?.status === 'running');
+      }
+      case 'task-output':
+      case 'task-ended': {
+        const rt = this.live.get(sid);
+        if (!rt || typeof event.status !== 'string') return false;
+        return toggle(rt.tasks, event.taskId, event.status === 'running');
+      }
+      case 'background-tasks-level': {
+        const rt = ensure();
+        const next = runningIds(event.tasks, 'taskId');
+        const changed = next.size !== rt.tasks.size || [...next].some((id) => !rt.tasks.has(id));
+        rt.tasks = next;
+        return changed;
+      }
+      case 'subagent-update': {
+        const agent = isRecord(event.agent) ? event.agent : null;
+        return toggle(ensure().subagents, agent?.id, agent?.status === 'running');
+      }
       case 'status': {
         if (typeof event.status !== 'string') return false;
         const rt = ensure();
@@ -471,6 +548,12 @@ export class DeskWidgetTracker {
     );
   }
 
+  /** 回合之外仍有后台命令 / 子代理在跑（实时事件口径） */
+  backgroundRunning(id: string): boolean {
+    const rt = this.live.get(id);
+    return rt ? rt.tasks.size + rt.subagents.size > 0 : false;
+  }
+
   /** 会话目录里的标题与项目名；目录里没有这一行时为 null */
   describeSession(
     id: string,
@@ -536,6 +619,7 @@ export class DeskWidgetTracker {
         pendingApprovalCount,
         pendingAskCount,
         updatedAt,
+        ...(this.backgroundRunning(id) ? { backgroundRunning: true } : {}),
       });
     }
 

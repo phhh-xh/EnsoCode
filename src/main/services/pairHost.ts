@@ -68,6 +68,7 @@ import {
   slimProjectsForPhone,
 } from '@shared/pair/metaSync';
 import { normalizeTimelinePrefs, type PairTimelinePrefs } from '@shared/pair/timelinePrefs';
+import { hasPendingReminder, rootIdOfReminder } from '@shared/reminders';
 import type {
   AgentSpawnRequest,
   ApprovalDecision,
@@ -143,6 +144,7 @@ import {
   remoteLinkRevoked,
 } from './remoteRenderer/hostHooks';
 import { isSessionMuted } from './sessionMuteGate';
+import { readSessionReminders } from './sessionReminders';
 
 const gzipAsync = promisify(gzip);
 const RESET_RELAY_ONLY_MS = 3_000;
@@ -289,12 +291,25 @@ export interface PairAgentBridge {
   respondApproval(sessionId: string, requestId: string, decision: ApprovalDecision): void;
   respondAsk(sessionId: string, requestId: string, answer: string): void;
   spawn(request: AgentSpawnRequest): Promise<{ ok: boolean; error?: string }>;
+  /** 会话树里还有活：子代理 / coworker 在跑或等你、后台命令在跑（回合结束后也可能） */
+  backgroundWorkRunning?(sessionId: string): boolean;
 }
 
 let agentBridge: PairAgentBridge | null = null;
 
 export function setPairAgentBridge(bridge: PairAgentBridge): void {
   agentBridge = bridge;
+}
+
+/** 会话树里还有活（无渲染器时 headless 目录据此补 backgroundRunning） */
+export function pairBackgroundWorkRunning(sessionId: string): boolean {
+  return agentBridge?.backgroundWorkRunning?.(sessionId) === true;
+}
+
+/** 回合结束时会话还没收尾：树里还有活，或挂着未到点的 remind_me。此时不推「完成」 */
+function workContinuesAfterTurn(sessionId: string): boolean {
+  if (pairBackgroundWorkRunning(sessionId)) return true;
+  return hasPendingReminder(readSessionReminders(rootIdOfReminder(sessionId)), Date.now());
 }
 
 export function setPairSessionCreatedListener(
@@ -1720,6 +1735,15 @@ export function forwardAgentEvent(event: RendererAgentEvent): void {
   const flatSessionId = recorded?.sessionId ?? e.identity?.sessionId ?? e.sessionId;
   const outgoingEvent =
     recorded?.event ?? (flatSessionId ? { ...event, sessionId: flatSessionId } : event);
+  // 只在要推「完成」时才查：读提醒文件有 IO，每个事件一次足够
+  let workContinues: boolean | undefined;
+  const turnUnfinished = () => {
+    workContinues ??=
+      e.type === 'turn-completed' && flatSessionId !== undefined
+        ? workContinuesAfterTurn(flatSessionId)
+        : false;
+    return workContinues;
+  };
 
   for (const conn of connections.values()) {
     // 离线或锁屏/切后台（socket 半开不算离线）都转系统推送，只发通用文案
@@ -1730,7 +1754,8 @@ export function forwardAgentEvent(event: RendererAgentEvent): void {
           catalog.find((entry) => entry.id === flatSessionId)?.title ??
             (flatSessionId ? botPort?.sessionTitle(flatSessionId) : undefined),
           readNotifyMainAgentOnly(),
-          flatSessionId ? isSessionMuted(flatSessionId) : false
+          flatSessionId ? isSessionMuted(flatSessionId) : false,
+          turnUnfinished()
         );
         if (payload) void sendPush(conn.device.pairId, payload);
       }

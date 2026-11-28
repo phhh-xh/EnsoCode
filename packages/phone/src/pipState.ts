@@ -1,5 +1,6 @@
 import type { CatalogEntry } from '@enso/pair';
 import type { GuestSessionView } from '@shared/pair/guestProjection';
+import { type PairSessionActivity, pairSessionActivity } from '@shared/pair/sessionActivity';
 import type { ProjectedMessage, ProjectedPart } from '@shared/types/agent';
 import type {
   NativePipAspect,
@@ -78,8 +79,6 @@ const READ_TOOLS = new Set(['read', 'ls', 'image_view']);
 const SEARCH_TOOLS = new Set(['grep', 'find', 'web_search', 'web_fetch', 'memory_search']);
 const COMMAND_TOOLS = new Set(['bash', 'powershell', 'codemode', 'exec']);
 const EDIT_TOOLS = new Set(['edit', 'write', 'apply_patch']);
-
-type PipStatus = NativePipSnapshot['status'];
 
 export function loadNativePipAuto(storage: Pick<Storage, 'getItem'>): boolean {
   try {
@@ -629,12 +628,17 @@ function contiguousTail(
   return { messages: out, baseIndex: index + 1 };
 }
 
-function resolveStatus(connectionState: string, pending: number, status: string): PipStatus {
-  if (connectionState !== 'online') return 'offline';
-  if (pending > 0) return 'pending';
-  if (status === 'running') return 'running';
-  if (status === 'failed') return 'failed';
-  return 'idle';
+function resolveStatus(
+  connectionState: string,
+  pending: number,
+  activity: PairSessionActivity
+): Pick<NativePipSnapshot, 'status' | 'activity'> {
+  if (connectionState !== 'online') return { status: 'offline', activity: null };
+  if (pending > 0 || activity === 'waiting') return { status: 'pending', activity: null };
+  if (activity === 'background') return { status: 'running', activity };
+  if (activity === 'reminder') return { status: 'idle', activity };
+  if (activity === 'running' || activity === 'failed') return { status: activity, activity: null };
+  return { status: 'idle', activity: null };
 }
 
 function approvalHint(tool: unknown): string {
@@ -812,7 +816,16 @@ export class DeskPipTracker {
   applyAgentEventPayload(payloadJson: string, now = Date.now()): boolean {
     const event = firstArg(payloadJson);
     if (!isRecord(event) || typeof event.type !== 'string') return false;
-    return this.applyAgentEvent(event, now);
+    // 目录追踪器同吃一份事件：后台任务 / 子代理的运行态记在那边，浮窗据此判等后台任务
+    const background = this.directory.applyAgentEventPayload(payloadJson, now);
+    return this.applyAgentEvent(event, now) || background;
+  }
+
+  private activityOf(sessionId: string, session: PipSession): PairSessionActivity {
+    return pairSessionActivity({
+      status: session.status,
+      backgroundRunning: this.directory.backgroundRunning(sessionId),
+    });
   }
 
   private applyAgentEvent(event: Record<string, unknown>, now: number): boolean {
@@ -1005,8 +1018,9 @@ export class DeskPipTracker {
   }): NativePipSnapshot {
     let runningCount = 0;
     let pendingCount = 0;
-    for (const session of this.sessions.values()) {
-      if (session.status === 'running') runningCount += 1;
+    for (const [id, session] of this.sessions) {
+      if (session.status === 'running' || this.activityOf(id, session) === 'background')
+        runningCount += 1;
       pendingCount += pendingOf(session);
     }
     const sessionId = this.pickFocus();
@@ -1026,7 +1040,11 @@ export class DeskPipTracker {
       sessionId,
       title: meta?.title ?? (sessionId ? '未命名会话' : params.deviceLabel || 'EnsoCode'),
       projectName: meta?.projectName ?? params.deviceLabel,
-      status: resolveStatus(params.connectionState, pending, session?.status ?? 'idle'),
+      ...resolveStatus(
+        params.connectionState,
+        pending,
+        session && sessionId ? this.activityOf(sessionId, session) : 'idle'
+      ),
       pendingHint: hint ?? otherPendingHint(pendingCount),
       pendingDetail,
       todo: extractLatestTodo(tail.messages),
@@ -1063,10 +1081,16 @@ export function buildPipSnapshotFromGuestView(input: {
   let runningCount = 0;
   let pendingCount = 0;
   const visibleCatalog: CatalogEntry[] = [];
+  const viewChildRunning = (view: GuestSessionView | undefined) =>
+    view?.tasks.some((t) => t.status === 'running') === true ||
+    view?.subagents.some((a) => a.status === 'running') === true;
   for (const c of input.catalog) {
     if (c.archived || c.parentId) continue;
     visibleCatalog.push(c);
-    if (c.status === 'running') runningCount += 1;
+    const background =
+      pairSessionActivity(c, c.id === input.activeId && viewChildRunning(input.view)) ===
+      'background';
+    if (c.status === 'running' || background) runningCount += 1;
     pendingCount += (c.pendingApprovalCount ?? 0) + (c.pendingAskCount ?? 0);
   }
   if (input.followMode === 'latest' && visibleCatalog.length > 0) {
@@ -1095,6 +1119,17 @@ export function buildPipSnapshotFromGuestView(input: {
       : null;
   const tail = targetView ? contiguousTail(targetView.messages) : { messages: [], baseIndex: 0 };
   const status = targetView?.status ?? targetEntry?.status ?? 'idle';
+  // 待确认数已按视图优先算进 pending；活跃态只取运行 / 后台 / 提醒 / 失败，订阅会话的任务以视图为准
+  const activity = pairSessionActivity(
+    {
+      status,
+      unread: targetEntry?.unread,
+      parked: targetEntry?.parked,
+      queueFailed: targetEntry?.queueFailed,
+      backgroundRunning: targetEntry?.backgroundRunning,
+    },
+    viewChildRunning(targetView)
+  );
   const metaParts: string[] = [];
   if (targetEntry?.modelLabel) metaParts.push(targetEntry.modelLabel);
   if (
@@ -1113,7 +1148,7 @@ export function buildPipSnapshotFromGuestView(input: {
     title:
       targetEntry?.title?.trim() || (targetId ? '未命名会话' : input.deviceLabel || 'EnsoCode'),
     projectName: targetEntry?.projectName || input.deviceLabel,
-    status: resolveStatus(input.connectionState, pending, status),
+    ...resolveStatus(input.connectionState, pending, activity),
     pendingHint: hint ?? otherPendingHint(pending > 0 ? pending : pendingCount),
     pendingDetail,
     todo: extractLatestTodo(tail.messages),

@@ -71,7 +71,10 @@ final class EnsoWidgetBridge {
             }
             hadLiveWork = true
 
-            let status = snapshot.pendingCount > 0 ? "pending" : "running"
+            // runningCount 含「回合已结束、后台任务仍在跑」：灵动岛显示等待后台任务而不是已完成
+            let status = snapshot.pendingCount > 0
+                ? "pending"
+                : (snapshot.activeStatus == "background" ? "background" : "running")
             let title = nonEmpty(snapshot.activeTitle) ?? "EnsoCode 正在执行"
             let project = nonEmpty(snapshot.activeProject) ?? snapshot.deviceLabel
             let detail: String = {
@@ -79,6 +82,7 @@ final class EnsoWidgetBridge {
                 if snapshot.pendingCount > 0 {
                     return "有 \(snapshot.pendingCount) 项等待你的确认"
                 }
+                if status == "background" { return "等待后台任务" }
                 return snapshot.runningCount > 1
                     ? "\(snapshot.runningCount) 个会话运行中"
                     : "Agent 正在执行"

@@ -9,6 +9,7 @@ import type { InterruptedTurn } from '@shared/exitInterrupt';
 import type { PluginSessionStatus, SessionStatusPayload } from '@shared/extensionPlugins/events';
 import { normalizeLocale } from '@shared/i18n';
 import { type PersistedPairConversation, planPairResume } from '@shared/pair/headlessResume';
+import { treeWorkRunning } from '@shared/pair/sessionActivity';
 import { providerKeyFor } from '@shared/providers/providerKey';
 import { projectSafeJournal } from '@shared/safeJournalProjection';
 import { appendInboundImageLines } from '@shared/secretary/inboundImages';
@@ -1738,6 +1739,14 @@ function cacheBotScreenshots(
 
 function wirePairAgentBridge(): void {
   setPairAgentBridge({
+    // 手机「等待后台任务」与完成推送的判据：根会话自身已报 idle 后树里还有没有活
+    backgroundWorkRunning: (sessionId) => {
+      const tree = pluginSessionStates.status(sessionId);
+      return (
+        treeWorkRunning(tree.state, backgroundTaskStates.tasksInTree(tree.sessionId)) ||
+        observedSubagentsRunning(tree.sessionId)
+      );
+    },
     prompt: (sessionId, text, images) => {
       const rejected = botControlError(sessionId);
       if (rejected) return rejected;

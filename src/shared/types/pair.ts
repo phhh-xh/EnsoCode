@@ -116,6 +116,8 @@ export interface PairCatalogPayload {
     };
     /** 空闲挂起：等提醒或等上游恢复，手机抽屉据此留在「活跃中」 */
     parked?: 'reminder' | 'upstream';
+    /** 后台命令 / 子代理 / coworker 仍在跑：手机显示等待后台任务，不算完成 */
+    backgroundRunning?: boolean;
     slashCommands?: { name: string; description: string }[];
     context?: ContextUsage;
     usageTotals?: SessionUsageTotals;

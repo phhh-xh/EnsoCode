@@ -183,6 +183,8 @@ public struct EnsoPiPSnapshot: Codable, Equatable, Sendable {
     public let projectName: String
     /// "running" | "pending" | "idle" | "failed" | "offline"
     public let status: String
+    /// 细分活跃态："background"（回合已结束、后台任务仍在跑）| "reminder"（等提醒）；旧前端缺省
+    public let activity: String?
     public let pendingHint: String?
     public let pendingDetail: EnsoPiPPendingDetail?
     public let todo: EnsoPiPTodoSummary?
@@ -201,6 +203,7 @@ public struct EnsoPiPSnapshot: Codable, Equatable, Sendable {
         title: String,
         projectName: String,
         status: String,
+        activity: String? = nil,
         pendingHint: String?,
         pendingDetail: EnsoPiPPendingDetail? = nil,
         todo: EnsoPiPTodoSummary? = nil,
@@ -216,6 +219,7 @@ public struct EnsoPiPSnapshot: Codable, Equatable, Sendable {
         self.title = title
         self.projectName = projectName
         self.status = status
+        self.activity = activity
         self.pendingHint = pendingHint
         self.pendingDetail = pendingDetail
         self.todo = todo
@@ -229,7 +233,7 @@ public struct EnsoPiPSnapshot: Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case sessionId, title, projectName, status, pendingHint, pendingDetail, todo, meta, theme
+        case sessionId, title, projectName, status, activity, pendingHint, pendingDetail, todo, meta, theme
         case runningCount, pendingCount
         case connectionState, messages, updatedAt
     }
@@ -240,6 +244,7 @@ public struct EnsoPiPSnapshot: Codable, Equatable, Sendable {
         title = try c.decodeIfPresent(String.self, forKey: .title) ?? ""
         projectName = try c.decodeIfPresent(String.self, forKey: .projectName) ?? ""
         status = try c.decodeIfPresent(String.self, forKey: .status) ?? "idle"
+        activity = try c.decodeIfPresent(String.self, forKey: .activity)
         pendingHint = try c.decodeIfPresent(String.self, forKey: .pendingHint)
         pendingDetail = try c.decodeIfPresent(EnsoPiPPendingDetail.self, forKey: .pendingDetail)
         todo = try c.decodeIfPresent(EnsoPiPTodoSummary.self, forKey: .todo)
@@ -250,6 +255,12 @@ public struct EnsoPiPSnapshot: Codable, Equatable, Sendable {
         connectionState = try c.decodeIfPresent(String.self, forKey: .connectionState) ?? "offline"
         messages = try c.decodeIfPresent([EnsoPiPMessage].self, forKey: .messages) ?? []
         updatedAt = try c.decodeIfPresent(Double.self, forKey: .updatedAt) ?? 0
+    }
+
+    /// 展示用状态词：有细分活跃态用它（等待后台任务 / 等待提醒），否则用 status
+    public var displayStatus: String {
+        guard let activity, status == "running" || status == "idle" else { return status }
+        return activity
     }
 
     public static let placeholder = EnsoPiPSnapshot(
@@ -327,6 +338,7 @@ public struct EnsoPiPSnapshot: Codable, Equatable, Sendable {
             title: cleanTitle.isEmpty ? Self.placeholder.title : cleanTitle,
             projectName: Self.truncated(projectName, to: 60),
             status: status,
+            activity: Self.nonEmpty(activity),
             pendingHint: Self.nonEmpty(pendingHint).map { Self.truncated($0, to: 120) },
             pendingDetail: cleanPendingDetail,
             todo: cleanTodo,

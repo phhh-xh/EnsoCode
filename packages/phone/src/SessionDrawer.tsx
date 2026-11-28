@@ -12,6 +12,7 @@ import {
   orderProjectSessions,
   sortByActivity,
 } from '@shared/pair/drawerOrder';
+import { type PairSessionActivity, pairSessionActivity } from '@shared/pair/sessionActivity';
 import {
   ALL_GROUP_ID,
   filterProjectsByGroup,
@@ -24,6 +25,8 @@ import {
   Bell,
   BellOff,
   ChevronRight,
+  CircleHelp,
+  Clock,
   FolderGit2,
   Laptop,
   MessageSquarePlus,
@@ -906,7 +909,7 @@ function SessionRow({
     >
       <StatusDot
         status={session.status}
-        unread={session.unread}
+        activity={pairSessionActivity(session)}
         conversationId={session.id}
         queuePosition={session.queuePosition}
         queueFailed={session.queueFailed}
@@ -1038,22 +1041,22 @@ function ProjectGroup({
   );
 }
 
-/** 与桌面 ConversationDot 同款 */
+/** 与桌面 ConversationStatusIndicator 同款；等后台任务是手机独有的空心脉冲圈 */
 function StatusDot({
   status,
-  unread,
+  activity,
   conversationId,
   queuePosition,
   queueFailed,
 }: {
   status: string;
-  unread?: boolean;
+  activity: PairSessionActivity;
   conversationId?: string;
   queuePosition?: number;
   queueFailed?: string;
 }) {
   const { t } = useI18n();
-  if (status === 'queued' && !queueFailed) {
+  if (activity === 'queued' && status === 'queued') {
     const title = t('Queued · #{{n}}, starts automatically when a slot opens', {
       n: queuePosition ?? 1,
     });
@@ -1068,18 +1071,30 @@ function StatusDot({
       />
     );
   }
-  const running = status === 'running';
-  const failed = !running && (status === 'failed' || (status === 'queued' && Boolean(queueFailed)));
-  const showUnread = !running && !failed && unread === true;
+  if (activity === 'waiting' || activity === 'reminder') {
+    const waiting = activity === 'waiting';
+    const Icon = waiting ? CircleHelp : Clock;
+    const label = waiting ? '等你处理' : '等待提醒';
+    return (
+      <Icon
+        className={cn('h-3 w-3 shrink-0', waiting ? 'text-amber-500' : 'text-sky-500')}
+        aria-label={label}
+        data-tone={activity}
+      />
+    );
+  }
   return (
     <span
-      title={queueFailed}
+      title={activity === 'background' ? '等待后台任务' : queueFailed}
+      data-tone={activity}
       className={cn(
         'h-1.5 w-1.5 shrink-0 rounded-full',
-        running && 'animate-pulse bg-brand',
-        failed && 'bg-destructive',
-        showUnread && 'bg-green-500',
-        !running && !failed && !showUnread && 'bg-muted-foreground/30'
+        activity === 'running' && 'animate-pulse bg-brand',
+        activity === 'background' && 'animate-pulse border border-brand',
+        activity === 'failed' && 'bg-destructive',
+        activity === 'unread' && 'bg-green-500',
+        activity === 'queued' && 'bg-orange-500',
+        activity === 'idle' && 'bg-muted-foreground/30'
       )}
     />
   );

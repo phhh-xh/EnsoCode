@@ -26,7 +26,7 @@ struct EnsoLiveActivityWidget: Widget {
                 }
                 DynamicIslandExpandedRegion(.trailing) {
                     HStack(spacing: 6) {
-                        if context.state.status == "running" {
+                        if activityIsWorking(context.state.status) {
                             Text(context.state.startedAt, style: .timer)
                                 .font(.caption.weight(.semibold).monospacedDigit())
                                 .multilineTextAlignment(.trailing)
@@ -85,7 +85,7 @@ struct EnsoLiveActivityWidget: Widget {
                         .font(.caption2.weight(.bold))
                         .foregroundStyle(Color(red: 0.98, green: 0.75, blue: 0.14))
                         .padding(.trailing, 2)
-                } else if context.state.status == "running" {
+                } else if activityIsWorking(context.state.status) {
                     Text(context.state.startedAt, style: .timer)
                         .font(.caption2.weight(.semibold).monospacedDigit())
                         .multilineTextAlignment(.trailing)
@@ -134,7 +134,7 @@ private struct LockScreenActivityView: View {
                         .foregroundStyle(.white)
                         .lineLimit(1)
                     Spacer(minLength: 0)
-                    if context.state.status == "running" {
+                    if activityIsWorking(context.state.status) {
                         Text(context.state.startedAt, style: .timer)
                             .font(.caption.weight(.semibold).monospacedDigit())
                             .foregroundStyle(tint)
@@ -193,6 +193,11 @@ private struct ActivityStatusIcon: View {
         EnsoMarkView(size: size, color: activityTint(status), badge: badge)
             .accessibilityLabel("EnsoCode")
     }
+}
+
+/// 运行中与等待后台任务都在干活：显示计时而不是「已完成」
+private func activityIsWorking(_ status: String) -> Bool {
+    status == "running" || status == "background"
 }
 
 private func activityTint(_ status: String) -> Color {

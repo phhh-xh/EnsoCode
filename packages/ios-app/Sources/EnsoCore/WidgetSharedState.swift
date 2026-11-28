@@ -246,7 +246,7 @@ public final class SharedWidgetStore: @unchecked Sendable {
 @available(iOS 16.1, *)
 public struct EnsoSessionActivityAttributes: ActivityAttributes {
     public struct ContentState: Codable, Hashable, Sendable {
-        /// "running" | "pending" | "done" | "offline"
+        /// "running" | "background"（等待后台任务）| "pending" | "done" | "offline"
         public var status: String
         public var title: String
         public var projectName: String

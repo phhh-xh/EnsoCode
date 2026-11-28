@@ -310,6 +310,27 @@ final class EnsoCoreTests: XCTestCase {
         XCTAssertEqual(minimal.status, "idle")
         XCTAssertEqual(minimal.connectionState, "offline")
         XCTAssertTrue(minimal.messages.isEmpty)
+        XCTAssertNil(minimal.activity)
+        XCTAssertEqual(minimal.displayStatus, "idle")
+
+        // 回合已结束、后台任务仍在跑：旧词仍是 running，新 App 显示等待后台任务
+        let background = try JSONDecoder().decode(
+            EnsoPiPSnapshot.self,
+            from: Data("{\"status\":\"running\",\"activity\":\"background\"}".utf8)
+        )
+        XCTAssertEqual(background.displayStatus, "background")
+        XCTAssertEqual(background.sanitizedForDisplay().activity, "background")
+        let reminder = try JSONDecoder().decode(
+            EnsoPiPSnapshot.self,
+            from: Data("{\"status\":\"idle\",\"activity\":\"reminder\"}".utf8)
+        )
+        XCTAssertEqual(reminder.displayStatus, "reminder")
+        // 待确认 / 离线优先于细分态
+        let pending = try JSONDecoder().decode(
+            EnsoPiPSnapshot.self,
+            from: Data("{\"status\":\"pending\",\"activity\":\"background\"}".utf8)
+        )
+        XCTAssertEqual(pending.displayStatus, "pending")
 
         XCTAssertThrowsError(
             try JSONDecoder().decode(EnsoPiPMessage.self, from: Data("{\"role\":\"user\",\"text\":\"x\"}".utf8))

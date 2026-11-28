@@ -161,6 +161,24 @@ describe('buildPushPayload', () => {
     expect(empty?.body).toBe('agent 已完成,等你查看。');
   });
 
+  it('回合结束但会话还在等后台任务 / 子代理 / 提醒：不推「完成」，提问与失败照推', () => {
+    const done = { type: 'turn-completed', identity };
+    expect(buildPushPayload(done, '修复登录', true, false, true)).toBeNull();
+    expect(buildPushPayload(done, '修复登录', true, false, false)).not.toBeNull();
+    expect(
+      buildPushPayload({ type: 'ask-request', identity }, '修复登录', true, false, true)?.pending
+    ).toBe(true);
+    expect(
+      buildPushPayload(
+        { type: 'turn-failed', identity, error: 'boom' },
+        '修复登录',
+        true,
+        false,
+        true
+      )
+    ).not.toBeNull();
+  });
+
   it('silent 或纯系统注入的回合不推送（与桌面一致）', () => {
     expect(
       buildPushPayload({ type: 'turn-completed', identity, silent: true }, '修复登录')

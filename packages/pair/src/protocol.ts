@@ -251,6 +251,11 @@ export interface CatalogEntry {
   queueFailed?: string;
   /** 空闲挂起：等提醒（未到点 remind_me）或等上游恢复；抽屉据此留在「活跃中」，旧客户端忽略 */
   parked?: 'reminder' | 'upstream';
+  /**
+   * 回合结束后后台命令 / 子代理 / coworker 仍在跑（桌面 conversationHasRunningChild 同口径），只发 true。
+   * 手机据此显示「等待后台任务」而不是已完成；旧客户端忽略，旧桌面缺省时手机回落到目录里的子会话状态。
+   */
+  backgroundRunning?: boolean;
   /** 完成后未查看：桌面绿点、手机灰点 */
   unread?: boolean;
   /** 挂起的 ask_user 数：抽屉「活跃中」与桌面 waiting 色点同口径 */

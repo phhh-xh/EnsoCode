@@ -82,6 +82,9 @@ private struct PiPStatusStyle {
     init(status: String, theme: PiPTheme) {
         switch status {
         case "running": self.init("运行中", theme.running, .none)
+        // 回合已结束、后台任务仍在跑：与桌面一致不算完成
+        case "background": self.init("等待后台任务", theme.running, .none)
+        case "reminder": self.init("等待提醒", theme.running, .none)
         case "pending": self.init("待确认", theme.pending, .pending)
         case "failed": self.init("失败", theme.failed, .none)
         case "offline": self.init("离线", theme.offline, .none)
@@ -104,7 +107,7 @@ struct EnsoPiPConversationView: View {
     var body: some View {
         let snapshot = model.snapshot
         let theme = PiPTheme.resolve(snapshot.theme)
-        let style = PiPStatusStyle(status: snapshot.status, theme: theme)
+        let style = PiPStatusStyle(status: snapshot.displayStatus, theme: theme)
         VStack(spacing: 0) {
             header(snapshot, style: style, theme: theme)
             Rectangle().fill(theme.border).frame(height: 0.5)

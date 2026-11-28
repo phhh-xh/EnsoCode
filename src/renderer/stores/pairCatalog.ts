@@ -3,7 +3,11 @@ import { AGY_PROVIDER_ID } from '@shared/agy/constants';
 import { conversationCwd } from '@shared/conversationCwd';
 import { userAskCount } from '@shared/conversationDotTone';
 import { normalizeLocale, translate } from '@shared/i18n';
-import { catalogParked, catalogQueueOverride } from '@shared/pair/headlessCatalog';
+import {
+  catalogBackgroundRunning,
+  catalogParked,
+  catalogQueueOverride,
+} from '@shared/pair/headlessCatalog';
 import { catalogSyncFingerprint, pairJsonFingerprint } from '@shared/pair/metaSync';
 import { projectDisplayName } from '@shared/projectName';
 import { queuePositions } from '@shared/secretary/queuedSession';
@@ -86,6 +90,7 @@ function buildPayload(): PairCatalogPayload {
   const toEntry = (c: Conversation) => {
     const queue = catalogQueueOverride(c, positions.get(c.id));
     const parked = catalogParked(c, reminders[c.id], now);
+    const backgroundRunning = catalogBackgroundRunning(c, sessions.conversations);
     const context = resolveContextUsage(c.occupancy, c.contextWindow);
     const entry = {
       id: c.id,
@@ -131,6 +136,7 @@ function buildPayload(): PairCatalogPayload {
           }
         : {}),
       ...(parked ? { parked } : {}),
+      ...(backgroundRunning ? { backgroundRunning } : {}),
       ...(slashCommands.length ? { slashCommands } : {}),
       ...(context ? { context } : {}),
       ...(c.usageTotals ? { usageTotals: c.usageTotals } : {}),

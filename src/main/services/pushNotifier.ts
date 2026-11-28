@@ -34,6 +34,8 @@ function pushLocale(): NotificationLocale {
  * 事件 → 推送载荷的纯映射。返回 null 表示该事件不值得推送。
  * 文案与桌面系统通知共用 @shared/notificationCopy：标题带会话名，
  * 回合完成正文带 assistant 摘要，失败正文带错误原文。
+ * workContinues：回合结束时后台任务 / 子代理还在跑或挂着提醒——会话没收尾，
+ * 「完成」留给它们唤醒后真正收尾的那一轮再推（与手机列表的等待后台任务同口径）。
  */
 export function buildPushPayload(
   event: {
@@ -48,9 +50,11 @@ export function buildPushPayload(
   },
   sessionTitle: string | undefined,
   notifyMainAgentOnly = true,
-  muted = false
+  muted = false,
+  workContinues = false
 ): PushPayload | null {
   if (shouldMuteCoworkerCompletionNotification(event, notifyMainAgentOnly)) return null;
+  if (event.type === 'turn-completed' && workContinues) return null;
   // 代审中（reviewing）的审批可能由代审模型直接放行，不打扰真人；
   // 升级为等人决策时会以无 phase 的 approval-request 再发一次
   if (event.type === 'approval-request' && event.request?.phase === 'reviewing') return null;

@@ -116,6 +116,7 @@ private func statusAccent(_ snapshot: EnsoWidgetSnapshot) -> Color {
 
 private func connectionBadgeText(_ snapshot: EnsoWidgetSnapshot) -> String {
     if snapshot.pendingCount > 0 { return "待确认" }
+    if snapshot.activeStatus == "background" { return "等后台" }
     if snapshot.runningCount > 0 { return "运行中" }
     switch snapshot.connectionState {
     case "online": return snapshot.transport == "direct" ? "直连" : "在线"
@@ -129,8 +130,12 @@ private func sessionDotColor(_ item: EnsoWidgetSessionItem) -> Color {
     if item.pendingCount > 0 || item.status == "waiting" {
         return Color(red: 0.96, green: 0.62, blue: 0.04)
     }
-    if item.status == "running" {
+    // 等待后台任务与运行中同色：与桌面侧栏一致都不算完成
+    if item.status == "running" || item.status == "background" {
         return Color(red: 0.39, green: 0.40, blue: 0.95)
+    }
+    if item.status == "reminder" {
+        return Color(red: 0.05, green: 0.65, blue: 0.91)
     }
     if item.unread {
         return Color(red: 0.06, green: 0.72, blue: 0.51)

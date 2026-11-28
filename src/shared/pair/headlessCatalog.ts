@@ -1,3 +1,4 @@
+import { conversationHasRunningChild } from '@shared/conversationDotTone';
 import { hasPendingReminder } from '@shared/reminders';
 import { queuedStartOf } from '@shared/secretary/queuedSession';
 import type { PairCatalogPayload, PairCreatedSession } from '@shared/types/pair';
@@ -77,4 +78,19 @@ export function catalogParked(
   if (row.status === 'running' || row.spawning) return undefined;
   if (isUpstreamWaitingGoal(row.goal)) return 'upstream';
   return reminders && hasPendingReminder(reminders, now) ? 'reminder' : undefined;
+}
+
+type ChildRunningRow = Parameters<typeof conversationHasRunningChild>[0] & object;
+
+/**
+ * 后台命令 / 子代理 / coworker 子会话还在跑（桌面侧栏 conversationHasRunningChild 同口径）。
+ * 只有 true 才下发：手机据此把「回合已结束」判成等待后台任务而不是已完成。
+ */
+export function catalogBackgroundRunning(
+  row: Omit<ChildRunningRow, 'status'> & { status?: string },
+  conversations: Parameters<typeof conversationHasRunningChild>[1]
+): true | undefined {
+  return conversationHasRunningChild({ ...row, status: row.status ?? 'idle' }, conversations)
+    ? true
+    : undefined;
 }

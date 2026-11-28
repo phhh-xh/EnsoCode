@@ -33,7 +33,12 @@ import type {
 import type { PairCreatedSession, PairQueueAction, PairSessionConfig } from '@shared/types/pair';
 import { splitUnattendedPrefix } from '@shared/unattendedNote';
 import { patchConversationsState, readPersistedConversation } from '../ipc/settings';
-import { getPairCatalog, getPairProjects, mutatePairCatalog } from './pairHost';
+import {
+  getPairCatalog,
+  getPairProjects,
+  mutatePairCatalog,
+  pairBackgroundWorkRunning,
+} from './pairHost';
 
 export interface PairSessionHostAgent {
   isAlive(sessionId: string): boolean;
@@ -155,6 +160,8 @@ function pushCatalog(sessionId: string, runtime: HeadlessSessionRuntime, extra?:
     (catalog) =>
       patchCatalogEntry(catalog, sessionId, {
         status: runtime.status,
+        // 渲染器不在时没人重算这一位：按 Main 实时状态覆写，免得沿用渲染器最后一帧的旧值
+        backgroundRunning: pairBackgroundWorkRunning(sessionId) || undefined,
         queued: catalogQueued(runtime.queued),
         ...(runtime.goal
           ? {

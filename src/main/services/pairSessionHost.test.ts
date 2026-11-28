@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from 'vite
 const mocks = vi.hoisted(() => ({
   rows: {} as Record<string, Record<string, unknown>>,
   catalog: [] as unknown[],
+  background: new Set<string>(),
 }));
 
 vi.mock('../ipc/settings', () => ({
@@ -22,6 +23,7 @@ vi.mock('./pairHost', () => ({
   mutatePairCatalog: (fn: (catalog: unknown[]) => unknown[]) => {
     mocks.catalog = fn(mocks.catalog);
   },
+  pairBackgroundWorkRunning: (id: string) => mocks.background.has(id),
 }));
 
 import {
@@ -229,6 +231,22 @@ describe('headless stall watchdog', () => {
 });
 
 describe('headless goal continuation', () => {
+  it('无渲染器时目录的 backgroundRunning 按 Main 实时状态覆写，不沿用渲染器旧值', () => {
+    fakeAgent();
+    setPairHeadless(true);
+    mocks.catalog = [{ id: SID, title: '', status: 'idle', backgroundRunning: true }];
+    mocks.background.add(SID);
+    handlePairHeadlessAgentEvent(status('running'));
+    handlePairHeadlessAgentEvent(status('idle'));
+    expect(mocks.catalog[0]).toMatchObject({ status: 'idle', backgroundRunning: true });
+    mocks.background.delete(SID);
+    handlePairHeadlessAgentEvent(status('running'));
+    handlePairHeadlessAgentEvent(status('idle'));
+    expect(JSON.parse(JSON.stringify(mocks.catalog[0]))).toEqual(
+      expect.not.objectContaining({ backgroundRunning: expect.anything() })
+    );
+  });
+
   it('pumps an active goal once across status idle and turn-completed', () => {
     const agent = fakeAgent();
     setPairHeadless(true);

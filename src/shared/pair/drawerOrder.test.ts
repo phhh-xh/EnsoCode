@@ -80,6 +80,11 @@ describe('isDrawerActive', () => {
     expect(isDrawerActive({ status: 'idle' }, false)).toBe(false);
   });
 
+  it('桌面标了后台任务 / 子代理仍在跑：回合结束也留在活跃中', () => {
+    expect(isDrawerActive({ status: 'idle', backgroundRunning: true }, false)).toBe(true);
+    expect(isDrawerActive({ status: 'idle', backgroundRunning: false }, false)).toBe(false);
+  });
+
   it('等提醒 / 等上游恢复 / 续跑中算活跃，goal 结束后不算', () => {
     expect(isDrawerActive({ status: 'idle', parked: 'reminder' }, false)).toBe(true);
     expect(isDrawerActive({ status: 'idle', parked: 'upstream' }, false)).toBe(true);
