@@ -316,6 +316,7 @@ describe('typed Agent child projection', () => {
         'parent',
         'hello again',
         undefined,
+        expect.any(String),
         expect.any(String)
       )
     );

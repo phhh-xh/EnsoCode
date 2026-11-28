@@ -315,7 +315,10 @@ async function hello(link: RemoteLink, command: Extract<RemoteToHost, { type: 'r
   }
   const ready = (sender: RemoteSender, resumed: boolean, prefetch = false): void => {
     const leader = sender.kind === 'main' && isLeader(sender);
-    if (sender.kind === 'main') leaderSent.set(sender.id, leader);
+    // 续连先回 rpc-ready 再补发断线期间积压的旧帧（含挂起时写入的 leader=false）：
+    // 仅冷接入在此初始化 leaderSent；续连保留上次有序事件值，由随后的 refreshRemoteLeadership
+    // 在补发帧之后追加权威的 REMOTE_LEADER_CHANGED，避免旧帧把续连回来的 leader 覆写成 false。
+    if (sender.kind === 'main' && !resumed) leaderSent.set(sender.id, leader);
     link.send({
       type: 'rpc-ready',
       cid: command.cid,

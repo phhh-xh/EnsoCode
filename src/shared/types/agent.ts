@@ -2111,6 +2111,12 @@ export interface AgentActionResult {
 /** worker 不持有该会话（闲置回收 / worker 重启 / 换代）时拒绝 prompt/steer 的原因前缀 */
 export const STALE_SESSION_ERROR = 'unknown or stale session generation';
 
+/**
+ * 这条排队消息已由别的驱动方（leader 渲染器或 headless 宿主）投过：交接时各自的队列副本
+ * 可能还留着它。Main 按会话 + 排队消息 id 拒收重复投递；调用方据此丢掉回显、接着泵下一条。
+ */
+export const DUPLICATE_QUEUED_DELIVERY = 'queued message already delivered';
+
 export type ParentLifecycleEvent =
   | {
       type: 'parent-ready';

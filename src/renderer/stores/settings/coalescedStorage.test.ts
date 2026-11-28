@@ -144,4 +144,18 @@ describe('对象级会话持久化', () => {
     await storage.setItem('ipc-error', value(3));
     expect(writeKey).toHaveBeenLastCalledWith('ipc-error', value(3));
   });
+
+  it('写入被拒（如乐观水合门禁返回 false）后，不锁定同引用重试', async () => {
+    storageModule.openPersistWriteGate('retry-same-ref');
+    const snapshot = { revision: 42 };
+    writeKey.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+
+    await expect(
+      storage.setItem('retry-same-ref', { state: snapshot, version: 1 })
+    ).rejects.toThrow('retry-same-ref');
+    await storage.setItem('retry-same-ref', { state: snapshot, version: 1 });
+
+    expect(writeKey).toHaveBeenCalledTimes(2);
+    expect(writeKey).toHaveBeenLastCalledWith('retry-same-ref', { state: snapshot, version: 1 });
+  });
 });

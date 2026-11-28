@@ -23,7 +23,12 @@ describe('headless queue', () => {
     expect(queued.deliver).toBeUndefined();
     expect(queued.runtime.queued).toHaveLength(1);
     const idle = onHeadlessIdle(queued.runtime);
-    expect(idle.deliver).toEqual({ kind: 'prompt', text: 'later', images: undefined });
+    expect(idle.deliver).toEqual({
+      kind: 'prompt',
+      text: 'later',
+      images: undefined,
+      queuedId: 'q1',
+    });
     expect(idle.runtime.queued).toHaveLength(0);
   });
 
@@ -53,7 +58,12 @@ describe('headless queue', () => {
       { type: 'queue-send-now', sessionId: 's', messageId: 'q1' },
       ids()
     );
-    expect(sent.deliver).toEqual({ kind: 'steer', text: 'now', images: undefined });
+    expect(sent.deliver).toEqual({
+      kind: 'steer',
+      text: 'now',
+      images: undefined,
+      queuedId: 'q1',
+    });
   });
 
   it('pauses goal continuation at the automatic turn cap', () => {
@@ -80,7 +90,12 @@ describe('headless queue', () => {
       { ...idleRuntime, queued: [{ id: 'q1', text: 'user says' }] },
       { awaitingReminder: true }
     );
-    expect(queued.deliver).toEqual({ kind: 'prompt', text: 'user says', images: undefined });
+    expect(queued.deliver).toEqual({
+      kind: 'prompt',
+      text: 'user says',
+      images: undefined,
+      queuedId: 'q1',
+    });
   });
 
   it('stops continuation after a goal signal', () => {

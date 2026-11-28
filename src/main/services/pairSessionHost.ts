@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { CatalogEntry } from '@enso/pair';
+import type { ConversationsPatch } from '@shared/conversationsPatch';
 import {
   catalogEntryFromPairSession,
   catalogQueued,
@@ -10,7 +11,9 @@ import {
   applyHeadlessGoalSignal,
   applyHeadlessQueueAction,
   emptyHeadlessRuntime,
+  flushHeadlessQueue,
   type HeadlessDelivery,
+  type HeadlessQueuedMessage,
   type HeadlessSessionRuntime,
   onHeadlessIdle,
 } from '@shared/pair/headlessQueue';
@@ -23,12 +26,13 @@ import {
   shouldAbortStalledGeneration,
 } from '@shared/stallTimeout';
 import { cleanTitleSummarySource, extractRepresentativeTitle } from '@shared/titleSource';
-import type {
-  AgentActionResult,
-  AgentSpawnRequest,
-  AttachedImage,
-  RendererAgentEvent,
-  TitleSummaryInput,
+import {
+  type AgentActionResult,
+  type AgentSpawnRequest,
+  type AttachedImage,
+  DUPLICATE_QUEUED_DELIVERY,
+  type RendererAgentEvent,
+  type TitleSummaryInput,
 } from '@shared/types/agent';
 import type { PairCreatedSession, PairQueueAction, PairSessionConfig } from '@shared/types/pair';
 import { splitUnattendedPrefix } from '@shared/unattendedNote';
@@ -39,13 +43,27 @@ import {
   mutatePairCatalog,
   pairBackgroundWorkRunning,
 } from './pairHost';
+import { onConversationsMerged } from './remoteRenderer/conversationSync';
 
 export interface PairSessionHostAgent {
   isAlive(sessionId: string): boolean;
   requestSnapshot(sessionId: string): void;
   spawn(request: AgentSpawnRequest): Promise<{ ok: boolean; error?: string }>;
-  prompt(sessionId: string, text: string, images?: AttachedImage[]): void;
-  steer(sessionId: string, text: string, images?: AttachedImage[]): void;
+  /** queuedId：出自排队消息时带上，Main 拒收已投过的同一条（DUPLICATE_QUEUED_DELIVERY） */
+  prompt(
+    sessionId: string,
+    text: string,
+    images?: AttachedImage[],
+    queuedId?: string
+  ): AgentActionResult | undefined;
+  steer(
+    sessionId: string,
+    text: string,
+    images?: AttachedImage[],
+    queuedId?: string
+  ): AgentActionResult | undefined;
+  /** worker 事件流汇总出的主会话自身实时状态；状态不明的会话据此判断能不能投递 */
+  liveStatus(sessionId: string): 'idle' | 'running';
   abort(sessionId: string): void;
   setModel(sessionId: string, providerId: string, modelId: string): void;
   setReasoning(sessionId: string, enabled: boolean, level?: string): void;
@@ -89,6 +107,7 @@ const beats = new Map<string, StallBeat>();
 const waitingIds = new Map<string, { approvals: Set<string>; asks: Set<string> }>();
 const titleBaselines = new Map<string, string>();
 let stallTimer: ReturnType<typeof setInterval> | null = null;
+let stopMergedSync: (() => void) | null = null;
 
 export function configurePairSessionHost(next: PairSessionHostAgent): void {
   agent = next;
@@ -98,6 +117,8 @@ export function setPairHeadless(active: boolean): void {
   headless = active;
   if (stallTimer) clearInterval(stallTimer);
   stallTimer = null;
+  stopMergedSync?.();
+  stopMergedSync = null;
   beats.clear();
   waitingIds.clear();
   titleBaselines.clear();
@@ -107,6 +128,7 @@ export function setPairHeadless(active: boolean): void {
     return;
   }
   seedRuntimes();
+  stopMergedSync = onConversationsMerged(handleHeadlessConversationsMerged);
   stallTimer = setInterval(stallTick, 1000);
   stallTimer.unref?.();
 }
@@ -131,12 +153,88 @@ export function headlessIdleBlocks(): {
   return { queuedCount, pendingAskCount, pendingApprovalCount };
 }
 
+function parsePersistedQueued(value: unknown): HeadlessQueuedMessage[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is HeadlessQueuedMessage =>
+    Boolean(item && typeof item === 'object' && typeof (item as { id?: unknown }).id === 'string')
+  );
+}
+
+function parsePersistedGoal(value: unknown): HeadlessSessionRuntime['goal'] {
+  return value && typeof value === 'object' ? (value as HeadlessSessionRuntime['goal']) : undefined;
+}
+
+function sameQueued(
+  a: readonly HeadlessQueuedMessage[],
+  b: readonly HeadlessQueuedMessage[]
+): boolean {
+  return (
+    a.length === b.length &&
+    a.every(
+      (item, index) =>
+        item.id === b[index]?.id &&
+        item.text === b[index]?.text &&
+        (item.images?.length ?? 0) === (b[index]?.images?.length ?? 0)
+    )
+  );
+}
+
+/**
+ * 没进运行时表的会话：worker 活着时按 Main 实时状态播种，不能一律当空闲，
+ * 否则它正在跑时新排队项会被轮中投递。
+ */
+function unseenRuntime(
+  sessionId: string,
+  persisted: Record<string, unknown> | null
+): HeadlessSessionRuntime {
+  const alive = agent?.isAlive(sessionId) === true;
+  return {
+    ...emptyHeadlessRuntime(),
+    started: alive,
+    status: alive && agent ? agent.liveStatus(sessionId) : 'idle',
+    goal: parsePersistedGoal(persisted?.goal),
+  };
+}
+
 function runtimeOf(sessionId: string): HeadlessSessionRuntime {
   const current = runtimes.get(sessionId);
   if (current) return current;
-  const seeded = emptyHeadlessRuntime();
+  const persisted = isMainDriven(sessionId) ? null : readPersistedConversation(sessionId);
+  const seeded: HeadlessSessionRuntime = {
+    ...unseenRuntime(sessionId, persisted),
+    queued: parsePersistedQueued(persisted?.queuedMessages),
+  };
   runtimes.set(sessionId, seeded);
   return seeded;
+}
+
+function handleHeadlessConversationsMerged(patch: ConversationsPatch): void {
+  if (!headless) return;
+  for (const [sessionId, row] of Object.entries(patch.upserts)) {
+    if (isMainDriven(sessionId)) continue;
+    if (!('queuedMessages' in row.set) && !row.unset.includes('queuedMessages')) continue;
+    const persisted = readPersistedConversation(sessionId);
+    const nextQueued = parsePersistedQueued(persisted?.queuedMessages);
+    const previous = runtimes.get(sessionId);
+    if (previous && sameQueued(previous.queued, nextQueued)) continue;
+    const known = new Set((previous?.queued ?? []).map((item) => item.id));
+    const base = previous ?? unseenRuntime(sessionId, persisted);
+    const updated: HeadlessSessionRuntime = { ...base, queued: nextQueued };
+    if (nextQueued.some((item) => !known.has(item.id))) {
+      const flushed = flushHeadlessQueue(updated);
+      setRuntime(sessionId, flushed.runtime);
+      if (flushed.deliver) {
+        persistRuntime(sessionId, flushed.runtime);
+        pushCatalog(sessionId, flushed.runtime);
+        deliver(sessionId, flushed.deliver);
+      } else {
+        pushCatalog(sessionId, updated);
+      }
+      continue;
+    }
+    setRuntime(sessionId, updated);
+    pushCatalog(sessionId, updated);
+  }
 }
 
 function setRuntime(sessionId: string, runtime: HeadlessSessionRuntime): void {
@@ -179,8 +277,23 @@ function pushCatalog(sessionId: string, runtime: HeadlessSessionRuntime, extra?:
 }
 
 function deliver(sessionId: string, delivery: HeadlessDelivery): void {
-  if (delivery.kind === 'steer') agent?.steer(sessionId, delivery.text, delivery.images);
-  else agent?.prompt(sessionId, delivery.text, delivery.images);
+  const { text, images, queuedId } = delivery;
+  const result =
+    delivery.kind === 'steer'
+      ? agent?.steer(sessionId, text, images, queuedId)
+      : agent?.prompt(sessionId, text, images, queuedId);
+  if (delivery.kind !== 'prompt' || result?.error !== DUPLICATE_QUEUED_DELIVERY) return;
+  // 别的驱动方已投过这条（交接时队列副本没跟上）：它没开新轮。按实时状态回退，
+  // 空闲就接着泵下一条；还在跑就等那一轮收束，不并发投递
+  const runtime = runtimeOf(sessionId);
+  const flushed = flushHeadlessQueue({
+    ...runtime,
+    status: agent?.liveStatus(sessionId) ?? 'idle',
+  });
+  setRuntime(sessionId, flushed.runtime);
+  persistRuntime(sessionId, flushed.runtime);
+  pushCatalog(sessionId, flushed.runtime);
+  if (flushed.deliver) deliver(sessionId, flushed.deliver);
 }
 
 /** Main 的派出驱动者拥有这些会话的排队与目标：headless 宿主让出，否则轮次收束会各发一遍 */
@@ -194,24 +307,9 @@ function seedRuntimes(): void {
     if (isMainDriven(entry.id)) continue;
     const persisted = readPersistedConversation(entry.id);
     const queued = Array.isArray(persisted?.queuedMessages)
-      ? persisted.queuedMessages.filter(
-          (
-            item
-          ): item is {
-            id: string;
-            text: string;
-            images?: HeadlessSessionRuntime['queued'][number]['images'];
-          } =>
-            Boolean(
-              item && typeof item === 'object' && typeof (item as { id?: unknown }).id === 'string'
-            )
-        )
+      ? parsePersistedQueued(persisted.queuedMessages)
       : (entry.queued ?? []).map((item) => ({ id: item.id, text: item.text }));
-    const goal =
-      entry.goal ??
-      (persisted?.goal && typeof persisted.goal === 'object'
-        ? (persisted.goal as HeadlessSessionRuntime['goal'])
-        : undefined);
+    const goal = entry.goal ?? parsePersistedGoal(persisted?.goal);
     runtimes.set(entry.id, {
       status: entry.status,
       started: agent?.isAlive(entry.id) === true || entry.status === 'running',

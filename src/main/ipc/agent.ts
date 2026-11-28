@@ -33,6 +33,7 @@ import {
   type ChildHistoryResult,
   type ChildRunListResult,
   type ConversationReloadResult,
+  DUPLICATE_QUEUED_DELIVERY,
   isApprovalDecision,
   isDeliveryId,
   type McpStatusPush,
@@ -211,6 +212,7 @@ import {
   handlePairHeadlessAgentEvent,
   resetStallBeatsForSystemResume,
 } from '../services/pairSessionHost';
+import { claimQueuedDelivery, releaseQueuedDelivery } from '../services/queuedDeliveryLedger';
 import { planReminderWake, reminderResumeFromAuthority } from '../services/reminderWake';
 import { remoteCandidates } from '../services/remoteModels';
 import { webContentsOrRemote } from '../services/remoteRenderer/lookup';
@@ -1847,6 +1849,21 @@ async function labelToolBatch(identity: SessionIdentity, digest: ToolBatchDigest
   }
 }
 
+/** 带排队 id 的投递先过账本：重复的拒收，没送到 worker 的撤销记账 */
+function deliverQueuedOnce(
+  sessionId: string,
+  queuedId: string | undefined,
+  send: () => AgentActionResult
+): AgentActionResult {
+  if (queuedId === undefined) return send();
+  if (!claimQueuedDelivery(sessionId, queuedId)) {
+    return { ok: false, error: DUPLICATE_QUEUED_DELIVERY };
+  }
+  const result = send();
+  if (!result.ok) releaseQueuedDelivery(sessionId, queuedId);
+  return result;
+}
+
 function wirePairSessionHost(): void {
   configurePairSessionHost({
     isAlive: (sessionId) => agentSessionIndex.isAlive(sessionId),
@@ -1854,17 +1871,28 @@ function wirePairSessionHost(): void {
       requestSnapshot(sessionId);
     },
     spawn: (request) => spawnRootFromMain(request),
-    prompt: (sessionId, text, images) => {
+    prompt: (sessionId, text, images, queuedId) => {
       const rejected = botControlError(sessionId);
       if (rejected) return rejected;
       const identity = exactIdentity(sessionId);
-      if (identity) promptSession(identity, text, images, randomUUID(), undefined, true);
+      if (!identity) return { ok: false, error: STALE_SESSION_ERROR };
+      return deliverQueuedOnce(identity.sessionId, queuedId, () =>
+        promptSession(identity, text, images, randomUUID(), undefined, true)
+      );
     },
-    steer: (sessionId, text, images) => {
+    steer: (sessionId, text, images, queuedId) => {
       const rejected = botControlError(sessionId);
       if (rejected) return rejected;
       const identity = exactIdentity(sessionId);
-      if (identity) steerSession(identity, text, images);
+      if (!identity) return { ok: false, error: STALE_SESSION_ERROR };
+      return deliverQueuedOnce(identity.sessionId, queuedId, () =>
+        steerSession(identity, text, images)
+      );
+    },
+    liveStatus: (sessionId) => {
+      const state = observedOwnSessionStatus(sessionId).state;
+      // waiting = 轮内挂着提问/审批，仍算在跑；error 是上一轮失败，worker 已能接新 prompt
+      return state === 'running' || state === 'waiting' ? 'running' : 'idle';
     },
     abort: (sessionId) => {
       const identity = exactIdentity(sessionId);
@@ -3254,25 +3282,34 @@ export function registerAgentHandlers(): void {
       sessionId: unknown,
       text: unknown,
       images?: unknown,
-      deliveryId?: unknown
+      deliveryId?: unknown,
+      /** 泵出的排队消息 id：Main 据此拒收重复投递 */
+      queuedId?: unknown
     ): AgentActionResult => {
       const rejected = botControlError(sessionId);
       if (rejected) return rejected;
       const identity = exactIdentity(sessionId);
-      if (!identity || !isValidMessageInput(sessionId, text, images) || !isDeliveryId(deliveryId)) {
+      if (
+        !identity ||
+        !isValidMessageInput(sessionId, text, images) ||
+        !isDeliveryId(deliveryId) ||
+        (queuedId !== undefined && !isDeliveryId(queuedId))
+      ) {
         return { ok: false, error: 'invalid prompt or stale session generation' };
       }
       if (agentSessionIndex.isDetached(identity))
         return { ok: false, error: DETACHED_SESSION_ERROR };
       const typedImages = images as { data: string; mimeType: string }[] | undefined;
       // 应用输入框：owner 本人在桌前输入
-      return promptSession(
-        identity,
-        withSecretaryImagePaths(identity.sessionId, text as string, typedImages),
-        typedImages,
-        deliveryId,
-        undefined,
-        true
+      return deliverQueuedOnce(identity.sessionId, queuedId, () =>
+        promptSession(
+          identity,
+          withSecretaryImagePaths(identity.sessionId, text as string, typedImages),
+          typedImages,
+          deliveryId,
+          undefined,
+          true
+        )
       );
     }
   );
@@ -3284,7 +3321,8 @@ export function registerAgentHandlers(): void {
       sessionId: unknown,
       text: unknown,
       images?: unknown,
-      deliveryId?: unknown
+      deliveryId?: unknown,
+      queuedId?: unknown
     ): AgentActionResult => {
       const rejected = botControlError(sessionId);
       if (rejected) return rejected;
@@ -3292,20 +3330,23 @@ export function registerAgentHandlers(): void {
       if (
         !identity ||
         !isValidMessageInput(sessionId, text, images) ||
-        (deliveryId !== undefined && !isDeliveryId(deliveryId))
+        (deliveryId !== undefined && !isDeliveryId(deliveryId)) ||
+        (queuedId !== undefined && !isDeliveryId(queuedId))
       ) {
         return { ok: false, error: 'invalid steer or stale session generation' };
       }
       if (agentSessionIndex.isDetached(identity))
         return { ok: false, error: DETACHED_SESSION_ERROR };
       const typedImages = images as { data: string; mimeType: string }[] | undefined;
-      return steerSession(
-        identity,
-        withSecretaryImagePaths(identity.sessionId, text as string, typedImages),
-        typedImages,
-        deliveryId,
-        undefined,
-        true
+      return deliverQueuedOnce(identity.sessionId, queuedId, () =>
+        steerSession(
+          identity,
+          withSecretaryImagePaths(identity.sessionId, text as string, typedImages),
+          typedImages,
+          deliveryId,
+          undefined,
+          true
+        )
       );
     }
   );

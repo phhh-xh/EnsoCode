@@ -346,7 +346,9 @@ describe('withdraw undelivered messages', () => {
         'parent',
         'continue',
         [{ data: 'aGk=', mimeType: 'image/png' }],
-        resent.deliveryId
+        resent.deliveryId,
+        // 重发按新排队项投递：排队 id 现生成，Main 判重不会拦它
+        expect.any(String)
       );
     }
   );

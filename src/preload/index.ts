@@ -1436,20 +1436,23 @@ const electronAPI = {
   agent: {
     spawn: (request: AgentSpawnRequest): Promise<AgentActionResult> =>
       ipcRenderer.invoke(IPC_CHANNELS.AGENT_SPAWN, request),
+    /** queuedId：泵出排队消息时带上，Main 拒收别的驱动方已投过的同一条 */
     prompt: (
       sessionId: string,
       text: string,
       images: AttachedImage[] | undefined,
-      deliveryId: string
+      deliveryId: string,
+      queuedId?: string
     ): Promise<AgentActionResult> =>
-      ipcRenderer.invoke(IPC_CHANNELS.AGENT_PROMPT, sessionId, text, images, deliveryId),
+      ipcRenderer.invoke(IPC_CHANNELS.AGENT_PROMPT, sessionId, text, images, deliveryId, queuedId),
     steer: (
       sessionId: string,
       text: string,
       images?: AttachedImage[],
-      deliveryId?: string
+      deliveryId?: string,
+      queuedId?: string
     ): Promise<AgentActionResult> =>
-      ipcRenderer.invoke(IPC_CHANNELS.AGENT_STEER, sessionId, text, images, deliveryId),
+      ipcRenderer.invoke(IPC_CHANNELS.AGENT_STEER, sessionId, text, images, deliveryId, queuedId),
     withdrawSteer: (sessionId: string, deliveryId: string): Promise<AgentActionResult> =>
       ipcRenderer.invoke(IPC_CHANNELS.AGENT_WITHDRAW_STEER, sessionId, deliveryId),
     /** 用户停止带 stopSubagents 与 cancelReminders：一并停子代理、取消会话自己定的提醒 */

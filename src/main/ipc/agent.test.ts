@@ -9,6 +9,7 @@ import {
 } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { DUPLICATE_QUEUED_DELIVERY } from '@shared/types/agent';
 import { IPC_CHANNELS } from '@shared/types/ipc';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setPluginOwnerBindingsProbe } from '../services/extensionPlugins';
@@ -1182,6 +1183,93 @@ describe('agent IPC Main identity boundary', () => {
       });
       expect(mocks.isDetached).toHaveBeenCalledWith(parent);
       expect(send).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('同一条排队消息只投一次：渲染器与 headless 宿主共用投递账本', () => {
+    const prompt = (...args: unknown[]) =>
+      mocks.handlers.get(IPC_CHANNELS.AGENT_PROMPT)?.(event, ...args);
+    const steer = (...args: unknown[]) =>
+      mocks.handlers.get(IPC_CHANNELS.AGENT_STEER)?.(event, ...args);
+    const headless = () =>
+      mocks.configurePairSessionHost.mock.calls.at(-1)![0] as {
+        prompt(sessionId: string, text: string, images?: unknown, queuedId?: string): unknown;
+      };
+    const useSession = (sessionId: string) => {
+      const identity = { sessionId, generation: 'gen-1' };
+      mocks.currentIdentity.mockReturnValue(identity);
+      mocks.promptSession.mockReturnValue({ ok: true });
+      mocks.steerSession.mockReturnValue({ ok: true });
+      return identity;
+    };
+
+    it('桌面刚投过 q1、写回未达就交给 PWA：PWA 再投同一 q1 被拒收，不再下发给 worker', async () => {
+      useSession('dedupe-ipc');
+      expect(await prompt('dedupe-ipc', 'q1', undefined, 'd-1', 'q1')).toEqual({ ok: true });
+      expect(await prompt('dedupe-ipc', 'q1', undefined, 'd-2', 'q1')).toEqual({
+        ok: false,
+        error: DUPLICATE_QUEUED_DELIVERY,
+      });
+      expect(mocks.promptSession).toHaveBeenCalledTimes(1);
+      // 别的排队项、别的会话同 id、不带排队 id 的普通发送都不受影响
+      expect(await prompt('dedupe-ipc', 'q2', undefined, 'd-3', 'q2')).toEqual({ ok: true });
+      expect(await prompt('dedupe-ipc', 'typed', undefined, 'd-4')).toEqual({ ok: true });
+      expect(await prompt('dedupe-ipc', 'typed', undefined, 'd-5')).toEqual({ ok: true });
+      useSession('dedupe-other');
+      expect(await prompt('dedupe-other', 'q1', undefined, 'd-6', 'q1')).toEqual({ ok: true });
+      expect(mocks.promptSession).toHaveBeenCalledTimes(5);
+    });
+
+    it('headless 刚投 q1 时续连交回 PWA：PWA 补泵同一 q1 被拒收；反过来也一样', async () => {
+      const identity = useSession('dedupe-headless');
+      headless().prompt('dedupe-headless', 'q1', undefined, 'q1');
+      expect(mocks.promptSession).toHaveBeenLastCalledWith(
+        identity,
+        'q1',
+        undefined,
+        expect.any(String),
+        undefined,
+        true
+      );
+      expect(await prompt('dedupe-headless', 'q1', undefined, 'd-1', 'q1')).toMatchObject({
+        ok: false,
+        error: DUPLICATE_QUEUED_DELIVERY,
+      });
+      expect(await prompt('dedupe-headless', 'q2', undefined, 'd-2', 'q2')).toEqual({ ok: true });
+      expect(headless().prompt('dedupe-headless', 'q2', undefined, 'q2')).toMatchObject({
+        ok: false,
+        error: DUPLICATE_QUEUED_DELIVERY,
+      });
+      expect(mocks.promptSession).toHaveBeenCalledTimes(2);
+    });
+
+    it('「立即发送」插话投过的排队项，旧值写回后再泵也拒收', async () => {
+      useSession('dedupe-steer');
+      expect(await steer('dedupe-steer', 'q1', undefined, 'd-1', 'q1')).toEqual({ ok: true });
+      expect(await prompt('dedupe-steer', 'q1', undefined, 'd-2', 'q1')).toMatchObject({
+        ok: false,
+        error: DUPLICATE_QUEUED_DELIVERY,
+      });
+      expect(mocks.promptSession).not.toHaveBeenCalled();
+    });
+
+    it('下发失败不记账：退回队列的同一条可以重投', async () => {
+      useSession('dedupe-failed');
+      mocks.promptSession.mockReturnValueOnce({ ok: false, error: 'worker gone' });
+      expect(await prompt('dedupe-failed', 'q1', undefined, 'd-1', 'q1')).toMatchObject({
+        ok: false,
+        error: 'worker gone',
+      });
+      expect(await prompt('dedupe-failed', 'q1', undefined, 'd-2', 'q1')).toEqual({ ok: true });
+      expect(mocks.promptSession).toHaveBeenCalledTimes(2);
+    });
+
+    it.each(['', 7, 'x'.repeat(129)])('非法排队 id %# 拒绝且不下发', async (queuedId) => {
+      useSession('dedupe-invalid');
+      expect(await prompt('dedupe-invalid', 'hi', undefined, 'd-1', queuedId)).toMatchObject({
+        ok: false,
+      });
+      expect(mocks.promptSession).not.toHaveBeenCalled();
     });
   });
 

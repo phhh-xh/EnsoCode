@@ -1,5 +1,34 @@
-import type { RendererAgentEvent, SourceAuthorityProjection } from '@shared/types/agent';
+import {
+  DUPLICATE_QUEUED_DELIVERY,
+  type RendererAgentEvent,
+  type SourceAuthorityProjection,
+} from '@shared/types/agent';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const leaderControl = vi.hoisted(() => {
+  let leader = true;
+  const listeners = new Set<(next: boolean) => void>();
+  return {
+    get: () => leader,
+    set(next: boolean) {
+      leader = next;
+      for (const listener of listeners) listener(next);
+    },
+    reset() {
+      leader = true;
+    },
+    on(listener: (next: boolean) => void) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  };
+});
+
+vi.mock('@/lib/rendererRole', () => ({
+  isLeaderRenderer: () => leaderControl.get(),
+  onLeaderRendererChanged: (listener: (next: boolean) => void) => leaderControl.on(listener),
+}));
+
 import {
   agentAbort,
   agentPrompt,
@@ -55,6 +84,7 @@ describe('typed Agent child projection', () => {
   });
 
   beforeEach(async () => {
+    leaderControl.reset();
     await resetSessionHarness();
   });
 
@@ -89,7 +119,13 @@ describe('typed Agent child projection', () => {
     }));
     await pending;
 
-    expect(agentPrompt).toHaveBeenCalledWith('parent', 'urgent', undefined, expect.any(String));
+    expect(agentPrompt).toHaveBeenCalledWith(
+      'parent',
+      'urgent',
+      undefined,
+      expect.any(String),
+      expect.any(String)
+    );
     const echo = sessionsModule.useSessionsStore
       .getState()
       .conversations.parent.messages.find((message) => message.optimistic);
@@ -120,7 +156,13 @@ describe('typed Agent child projection', () => {
     await sessionsModule.useSessionsStore.getState().interruptAndSendQueued('parent', 'q1');
 
     expect(agentAbort).toHaveBeenCalledWith('parent');
-    expect(agentPrompt).toHaveBeenCalledWith('parent', 'urgent', undefined, expect.any(String));
+    expect(agentPrompt).toHaveBeenCalledWith(
+      'parent',
+      'urgent',
+      undefined,
+      expect.any(String),
+      expect.any(String)
+    );
     const conversation = sessionsModule.useSessionsStore.getState().conversations.parent;
     expect(conversation.queuedMessages).toHaveLength(0);
     expect(conversation.messages.some((message) => message.optimistic)).toBe(true);
@@ -249,7 +291,13 @@ describe('typed Agent child projection', () => {
     pushRemoteQueue('parent', [{ id: 'q-remote', text: 'from pwa' }]);
 
     expect(agentPrompt).toHaveBeenCalledTimes(1);
-    expect(agentPrompt).toHaveBeenCalledWith('parent', 'from pwa', undefined, expect.any(String));
+    expect(agentPrompt).toHaveBeenCalledWith(
+      'parent',
+      'from pwa',
+      undefined,
+      expect.any(String),
+      expect.any(String)
+    );
     const conversation = sessionsModule.useSessionsStore.getState().conversations.parent;
     expect(conversation.queuedMessages).toEqual([]);
     expect(conversation.messages.some((message) => message.optimistic)).toBe(true);
@@ -335,7 +383,13 @@ describe('typed Agent child projection', () => {
     onConversationsResync?.();
 
     await vi.waitFor(() =>
-      expect(agentPrompt).toHaveBeenCalledWith('parent', 'from disk', undefined, expect.any(String))
+      expect(agentPrompt).toHaveBeenCalledWith(
+        'parent',
+        'from disk',
+        undefined,
+        expect.any(String),
+        expect.any(String)
+      )
     );
   });
 
@@ -355,7 +409,13 @@ describe('typed Agent child projection', () => {
 
     sessionsModule.useSessionsStore.getState().enqueueMessage('parent', 'from phone');
 
-    expect(agentPrompt).toHaveBeenCalledWith('parent', 'from phone', undefined, expect.any(String));
+    expect(agentPrompt).toHaveBeenCalledWith(
+      'parent',
+      'from phone',
+      undefined,
+      expect.any(String),
+      expect.any(String)
+    );
     expect(sessionsModule.useSessionsStore.getState().conversations.parent.queuedMessages).toEqual(
       []
     );
@@ -400,7 +460,13 @@ describe('typed Agent child projection', () => {
     store.sendQueuedNow('parent', 'q1');
 
     await vi.waitFor(() =>
-      expect(agentPrompt).toHaveBeenCalledWith('parent', 'after', images, expect.any(String))
+      expect(agentPrompt).toHaveBeenCalledWith(
+        'parent',
+        'after',
+        images,
+        expect.any(String),
+        expect.any(String)
+      )
     );
   });
 
@@ -602,6 +668,7 @@ describe('typed Agent child projection', () => {
         'parent',
         'after compact',
         undefined,
+        expect.any(String),
         expect.any(String)
       )
     );
@@ -721,7 +788,13 @@ describe('typed Agent child projection', () => {
 
     onAgentEvent?.({ type: 'turn-completed', identity, seq: 2, turnId: 't2' });
     await vi.waitFor(() =>
-      expect(agentPrompt).toHaveBeenCalledWith('parent', 'later', undefined, expect.any(String))
+      expect(agentPrompt).toHaveBeenCalledWith(
+        'parent',
+        'later',
+        undefined,
+        expect.any(String),
+        expect.any(String)
+      )
     );
   });
 
@@ -794,6 +867,7 @@ describe('typed Agent child projection', () => {
         'parent',
         'wait for compact',
         undefined,
+        expect.any(String),
         expect.any(String)
       )
     );
@@ -846,6 +920,7 @@ describe('typed Agent child projection', () => {
         'parent',
         'after reload',
         undefined,
+        expect.any(String),
         expect.any(String)
       )
     );
@@ -895,6 +970,7 @@ describe('typed Agent child projection', () => {
         'parent',
         'after restart',
         undefined,
+        expect.any(String),
         expect.any(String)
       )
     );
@@ -1227,6 +1303,7 @@ describe('IPC invoke 被拒时按失败分支收尾', () => {
   });
 
   beforeEach(async () => {
+    leaderControl.reset();
     await resetSessionHarness();
   });
 
@@ -1354,5 +1431,206 @@ describe('Main 驱动的派出会话', () => {
       { conversationId: 'parent', action: 'clear' },
     ]);
     expect(agentPrompt).not.toHaveBeenCalled();
+  });
+});
+
+describe('leader 切换时补泵错过的排队消息', () => {
+  beforeEach(async () => {
+    leaderControl.reset();
+    await resetSessionHarness();
+  });
+
+  function seedRunningWithQueue(queued: { id: string; text: string }[]) {
+    sessionsModule.useSessionsStore.setState((state) => ({
+      conversations: {
+        ...state.conversations,
+        parent: {
+          ...state.conversations.parent,
+          started: true,
+          status: 'running' as const,
+          generation: 'pg-leader',
+          queuedMessages: queued,
+        },
+      },
+    }));
+    agentPrompt.mockClear();
+  }
+
+  it('非 leader 期间收到正常 turn-completed，升为 leader 时补发排队消息', () => {
+    seedRunningWithQueue([{ id: 'q-missed', text: 'send after promote' }]);
+    leaderControl.set(false);
+
+    onAgentEvent?.({
+      type: 'status',
+      identity: { sessionId: 'parent', generation: 'pg-leader' },
+      seq: 1,
+      status: 'idle',
+    });
+    onAgentEvent?.({
+      type: 'turn-completed',
+      identity: { sessionId: 'parent', generation: 'pg-leader' },
+      seq: 2,
+      turnId: 't1',
+    });
+    expect(agentPrompt).not.toHaveBeenCalled();
+
+    leaderControl.set(true);
+
+    expect(agentPrompt).toHaveBeenCalledTimes(1);
+    expect(agentPrompt).toHaveBeenCalledWith(
+      'parent',
+      'send after promote',
+      undefined,
+      expect.any(String),
+      expect.any(String)
+    );
+    expect(sessionsModule.useSessionsStore.getState().conversations.parent.queuedMessages).toEqual(
+      []
+    );
+  });
+
+  it('非 leader 期间轮次被中断（aborted: true），升为 leader 时不误发保留的队列', () => {
+    seedRunningWithQueue([{ id: 'q-aborted', text: 'keep held' }]);
+    leaderControl.set(false);
+
+    onAgentEvent?.({
+      type: 'status',
+      identity: { sessionId: 'parent', generation: 'pg-leader' },
+      seq: 1,
+      status: 'idle',
+    });
+    onAgentEvent?.({
+      type: 'turn-completed',
+      identity: { sessionId: 'parent', generation: 'pg-leader' },
+      seq: 2,
+      turnId: 't1',
+      aborted: true,
+    });
+
+    leaderControl.set(true);
+
+    expect(agentPrompt).not.toHaveBeenCalled();
+    expect(sessionsModule.useSessionsStore.getState().conversations.parent.queuedMessages).toEqual([
+      { id: 'q-aborted', text: 'keep held' },
+    ]);
+  });
+
+  it('非 leader 期间压缩完成，升为 leader 时补发排队消息', () => {
+    sessionsModule.useSessionsStore.setState((state) => ({
+      conversations: {
+        ...state.conversations,
+        parent: {
+          ...state.conversations.parent,
+          started: true,
+          status: 'idle' as const,
+          compaction: 'running',
+          generation: 'pg-leader',
+          queuedMessages: [{ id: 'q-compact', text: 'after compact' }],
+        },
+      },
+    }));
+    agentPrompt.mockClear();
+    leaderControl.set(false);
+
+    onAgentEvent?.({
+      type: 'compaction',
+      identity: { sessionId: 'parent', generation: 'pg-leader' },
+      seq: 1,
+      state: 'end',
+    });
+    expect(agentPrompt).not.toHaveBeenCalled();
+
+    leaderControl.set(true);
+
+    expect(agentPrompt).toHaveBeenCalledTimes(1);
+    expect(agentPrompt).toHaveBeenCalledWith(
+      'parent',
+      'after compact',
+      undefined,
+      expect.any(String),
+      expect.any(String)
+    );
+  });
+
+  it('非 leader 期间错过收束后又起新轮并被中断，升为 leader 时不再误发', () => {
+    seedRunningWithQueue([{ id: 'q-held', text: 'do not auto send' }]);
+    leaderControl.set(false);
+
+    onAgentEvent?.({
+      type: 'status',
+      identity: { sessionId: 'parent', generation: 'pg-leader' },
+      seq: 1,
+      status: 'idle',
+    });
+    onAgentEvent?.({
+      type: 'turn-completed',
+      identity: { sessionId: 'parent', generation: 'pg-leader' },
+      seq: 2,
+      turnId: 't1',
+    });
+    // 下一轮跑起后被用户中断
+    onAgentEvent?.({
+      type: 'status',
+      identity: { sessionId: 'parent', generation: 'pg-leader' },
+      seq: 3,
+      status: 'running',
+    });
+    onAgentEvent?.({
+      type: 'status',
+      identity: { sessionId: 'parent', generation: 'pg-leader' },
+      seq: 4,
+      status: 'idle',
+    });
+    onAgentEvent?.({
+      type: 'turn-completed',
+      identity: { sessionId: 'parent', generation: 'pg-leader' },
+      seq: 5,
+      turnId: 't2',
+      aborted: true,
+    });
+
+    leaderControl.set(true);
+
+    expect(agentPrompt).not.toHaveBeenCalled();
+  });
+
+  it('上一个驱动方已投过 q1（写回没跟上）：升为 leader 补泵被 Main 判重拒收，丢掉回显接着投 q2', async () => {
+    seedRunningWithQueue([
+      { id: 'q1', text: 'delivered elsewhere' },
+      { id: 'q2', text: 'next one' },
+    ]);
+    agentPrompt.mockImplementationOnce(async () => ({
+      ok: false,
+      error: DUPLICATE_QUEUED_DELIVERY,
+    }));
+    leaderControl.set(false);
+    onAgentEvent?.({
+      type: 'status',
+      identity: { sessionId: 'parent', generation: 'pg-leader' },
+      seq: 1,
+      status: 'idle',
+    });
+    onAgentEvent?.({
+      type: 'turn-completed',
+      identity: { sessionId: 'parent', generation: 'pg-leader' },
+      seq: 2,
+      turnId: 't1',
+    });
+
+    leaderControl.set(true);
+    await vi.waitFor(() => expect(agentPrompt).toHaveBeenCalledTimes(2));
+
+    expect((agentPrompt.mock.calls as unknown[][]).map((call) => [call[1], call[4]])).toEqual([
+      ['delivered elsewhere', 'q1'],
+      ['next one', 'q2'],
+    ]);
+    const parent = sessionsModule.useSessionsStore.getState().conversations.parent;
+    expect(parent.queuedMessages).toEqual([]);
+    expect(parent.status).not.toBe('failed');
+    expect(parent.error).toBeUndefined();
+    const echoed = parent.messages
+      .filter((message) => message.role === 'user' && message.optimistic)
+      .map((message) => message.content.map((part) => ('text' in part ? part.text : '')).join(''));
+    expect(echoed).toEqual(['next one']);
   });
 });

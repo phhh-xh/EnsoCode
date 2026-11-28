@@ -42,6 +42,8 @@ export interface HeadlessDelivery {
   kind: 'prompt' | 'steer';
   text: string;
   images?: HeadlessQueuedMessage['images'];
+  /** 出自排队消息时带它的 id：Main 据此拒收别的驱动方已投过的同一条 */
+  queuedId?: string;
 }
 
 export function emptyHeadlessRuntime(): HeadlessSessionRuntime {
@@ -101,7 +103,7 @@ export function goalContinueText(objective: string): string {
   );
 }
 
-function flushQueue(runtime: HeadlessSessionRuntime): {
+export function flushHeadlessQueue(runtime: HeadlessSessionRuntime): {
   runtime: HeadlessSessionRuntime;
   deliver?: HeadlessDelivery;
 } {
@@ -110,7 +112,12 @@ function flushQueue(runtime: HeadlessSessionRuntime): {
   if (!taken) return { runtime };
   return {
     runtime: { ...taken.runtime, status: 'running' },
-    deliver: { kind: 'prompt', text: taken.item.text, images: taken.item.images },
+    deliver: {
+      kind: 'prompt',
+      text: taken.item.text,
+      images: taken.item.images,
+      queuedId: taken.item.id,
+    },
   };
 }
 
@@ -173,7 +180,7 @@ export function onHeadlessIdle(
     abortRequested: false,
   };
   if (runtime.abortRequested) return { runtime: next };
-  const queued = flushQueue(next);
+  const queued = flushHeadlessQueue(next);
   if (queued.deliver || options?.awaitingReminder) return queued;
   return continueGoal(queued.runtime, options?.autoTurnLimit);
 }
@@ -191,7 +198,7 @@ export function applyHeadlessQueueAction(
         text: action.text,
         ...(action.images?.length ? { images: action.images } : {}),
       };
-      return flushQueue({ ...runtime, queued: [...runtime.queued, item] });
+      return flushHeadlessQueue({ ...runtime, queued: [...runtime.queued, item] });
     }
     case 'queue-remove':
       return {
@@ -219,6 +226,7 @@ export function applyHeadlessQueueAction(
           kind: running ? 'steer' : 'prompt',
           text: taken.item.text,
           images: taken.item.images,
+          queuedId: taken.item.id,
         },
       };
     }

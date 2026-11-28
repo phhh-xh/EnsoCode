@@ -1,11 +1,20 @@
 import type { CatalogEntry } from '@enso/pair';
-import type { RendererAgentEvent } from '@shared/types/agent';
+import type { ConversationsPatch } from '@shared/conversationsPatch';
+import { DUPLICATE_QUEUED_DELIVERY, type RendererAgentEvent } from '@shared/types/agent';
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   rows: {} as Record<string, Record<string, unknown>>,
   catalog: [] as unknown[],
+  mergedListeners: new Set<(patch: ConversationsPatch) => void>(),
   background: new Set<string>(),
+}));
+
+vi.mock('./remoteRenderer/conversationSync', () => ({
+  onConversationsMerged: (listener: (patch: ConversationsPatch) => void) => {
+    mocks.mergedListeners.add(listener);
+    return () => mocks.mergedListeners.delete(listener);
+  },
 }));
 
 vi.mock('../ipc/settings', () => ({
@@ -61,6 +70,7 @@ function fakeAgent(overrides: Partial<PairSessionHostAgent> = {}) {
     loadLocalSkills: () => false,
     summarizeTitle: vi.fn(async () => ({ ok: true })),
     stallTimeoutMs: () => 60_000,
+    liveStatus: () => 'idle' as const,
     ...overrides,
   };
   configurePairSessionHost(agent);
@@ -386,5 +396,135 @@ describe('Main 驱动的派出会话', () => {
     setPairHeadless(true);
     applyPairQueueActionHeadless({ type: 'enqueue', sessionId: SID, text: 'from phone' });
     expect(agent.prompt).not.toHaveBeenCalled();
+  });
+});
+
+describe('headless 队列与磁盘补丁同步', () => {
+  it('会话尚未进入 pairCatalog 时，接管后回读磁盘上的 queuedMessages 并在轮次结束自动投递', () => {
+    mocks.catalog = [];
+    mocks.rows[SID] = {
+      id: SID,
+      projectId: 'p',
+      queuedMessages: [{ id: 'q-disk', text: 'from disk before catalog' }],
+    };
+    const agent = fakeAgent({ isAlive: () => true });
+    setPairHeadless(true);
+
+    handlePairHeadlessAgentEvent(event({ type: 'turn-completed', turnId: 't1' }));
+
+    expect(agent.prompt).toHaveBeenCalledTimes(1);
+    expect(agent.prompt).toHaveBeenCalledWith(SID, 'from disk before catalog', undefined, 'q-disk');
+    expect(mocks.rows[SID].queuedMessages).toEqual([]);
+  });
+
+  it('headless 态下经写回合并到达的新排队项：空闲立即投递，运行中等收束，只改字不误发', () => {
+    const emitMerged = (queuedMessages: { id: string; text: string }[]) => {
+      mocks.rows[SID] = { ...mocks.rows[SID], queuedMessages };
+      const patch: ConversationsPatch = {
+        upserts: { [SID]: { set: { queuedMessages }, unset: [] } },
+        removes: [],
+      };
+      for (const listener of mocks.mergedListeners) listener(patch);
+    };
+
+    const agent = fakeAgent({ isAlive: () => true });
+    mocks.catalog = [{ id: SID, title: '', status: 'idle' } as unknown as CatalogEntry];
+    setPairHeadless(true);
+
+    // 1. 空闲态收到新排队项 → 立即投递
+    emitMerged([{ id: 'q1', text: 'arrived while idle' }]);
+    expect(agent.prompt).toHaveBeenCalledTimes(1);
+    expect(agent.prompt).toHaveBeenCalledWith(SID, 'arrived while idle', undefined, 'q1');
+    expect(mocks.rows[SID].queuedMessages).toEqual([]);
+
+    // 2. 运行中收到新排队项 → 先保留，等 turn-completed 投递
+    (agent.prompt as Mock).mockClear();
+    handlePairHeadlessAgentEvent(status('running'));
+    emitMerged([{ id: 'q2', text: 'arrived while running' }]);
+    expect(agent.prompt).not.toHaveBeenCalled();
+
+    // 3. 轮次被中断：q2 留着；之后仅改字不触发投递
+    handlePairHeadlessAgentEvent(event({ type: 'turn-completed', turnId: 't2', aborted: true }));
+    expect(agent.prompt).not.toHaveBeenCalled();
+    emitMerged([{ id: 'q2', text: 'edited after abort' }]);
+    expect(agent.prompt).not.toHaveBeenCalled();
+  });
+});
+
+describe('headless 交接时的在途投递', () => {
+  const emitMerged = (queuedMessages: { id: string; text: string }[]) => {
+    mocks.rows[SID] = { ...mocks.rows[SID], queuedMessages };
+    const patch: ConversationsPatch = {
+      upserts: { [SID]: { set: { queuedMessages }, unset: [] } },
+      removes: [],
+    };
+    for (const listener of mocks.mergedListeners) listener(patch);
+  };
+  const promptedTexts = (agent: ReturnType<typeof fakeAgent>) =>
+    (agent.prompt as Mock).mock.calls.map((call) => call[1]);
+  const duplicateFirst = () => {
+    let first = true;
+    return vi.fn(() => {
+      if (!first) return { ok: true };
+      first = false;
+      return { ok: false, error: DUPLICATE_QUEUED_DELIVERY };
+    });
+  };
+
+  it('排队投递带上排队 id，供 Main 判重', () => {
+    const agent = fakeAgent();
+    setPairHeadless(true);
+    emitMerged([{ id: 'q1', text: 'first' }]);
+    expect(agent.prompt).toHaveBeenCalledWith(SID, 'first', undefined, 'q1');
+  });
+
+  it('旧值写回把已投过的 q1 又带回来：Main 拒收后丢掉它，会话实时空闲就接着投 q2', () => {
+    const agent = fakeAgent({ prompt: duplicateFirst() });
+    setPairHeadless(true);
+    emitMerged([
+      { id: 'q1', text: 'already delivered' },
+      { id: 'q2', text: 'next' },
+    ]);
+    expect(promptedTexts(agent)).toEqual(['already delivered', 'next']);
+    expect(mocks.rows[SID].queuedMessages).toEqual([]);
+    expect(headlessIdleBlocks().queuedCount).toBe(0);
+  });
+
+  it('上一个驱动方投的 q1 还在跑：拒收后不并发投 q2，等这一轮收束再投', () => {
+    let live: 'idle' | 'running' = 'running';
+    const agent = fakeAgent({ prompt: duplicateFirst(), liveStatus: () => live });
+    setPairHeadless(true);
+    emitMerged([
+      { id: 'q1', text: 'in flight elsewhere' },
+      { id: 'q2', text: 'after it' },
+    ]);
+    expect(promptedTexts(agent)).toEqual(['in flight elsewhere']);
+    expect(mocks.rows[SID].queuedMessages).toEqual([{ id: 'q2', text: 'after it' }]);
+
+    live = 'idle';
+    handlePairHeadlessAgentEvent(status('idle'));
+    handlePairHeadlessAgentEvent(event({ type: 'turn-completed', turnId: 't1' }));
+    expect(promptedTexts(agent)).toEqual(['in flight elsewhere', 'after it']);
+  });
+
+  it('没见过的会话 worker 正在跑：新排队项不轮中投递，等第一条收束再投', () => {
+    mocks.catalog = [];
+    const agent = fakeAgent({ isAlive: () => true, liveStatus: () => 'running' });
+    setPairHeadless(true);
+    emitMerged([{ id: 'q1', text: 'merged while running' }]);
+    applyPairQueueActionHeadless({ type: 'enqueue', sessionId: SID, text: 'phone while running' });
+    expect(agent.prompt).not.toHaveBeenCalled();
+
+    handlePairHeadlessAgentEvent(status('idle'));
+    handlePairHeadlessAgentEvent(event({ type: 'turn-completed', turnId: 't1' }));
+    expect(promptedTexts(agent)).toEqual(['merged while running']);
+  });
+
+  it('没见过的会话 worker 空闲：照旧立即投递', () => {
+    mocks.catalog = [];
+    const agent = fakeAgent({ isAlive: () => true, liveStatus: () => 'idle' });
+    setPairHeadless(true);
+    emitMerged([{ id: 'q1', text: 'idle now' }]);
+    expect(promptedTexts(agent)).toEqual(['idle now']);
   });
 });

@@ -4,6 +4,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   handlers: new Map<string, (event: unknown, ...args: unknown[]) => unknown>(),
+  desktopMain: null as { id: number } | null,
+  headless: false,
+  setPairHeadless: vi.fn((active: boolean) => {
+    mocks.headless = active;
+  }),
 }));
 
 vi.mock('@platform', () => ({
@@ -26,11 +31,11 @@ vi.mock('../localImageProtocol', () => ({
   handleLocalImageRequest: vi.fn(),
 }));
 vi.mock('../pairSessionHost', () => ({
-  isPairHeadless: () => false,
-  setPairHeadless: vi.fn(),
+  isPairHeadless: () => mocks.headless,
+  setPairHeadless: (active: boolean) => mocks.setPairHeadless(active),
 }));
 vi.mock('../renderers', () => ({
-  localMainContents: () => null,
+  localMainContents: () => mocks.desktopMain,
 }));
 vi.mock('../uiHost', () => ({
   localUi: () => null,
@@ -47,11 +52,14 @@ vi.mock('./ipcRegistry', () => ({
   registeredListeners: () => [],
 }));
 
-import { handleRemoteCommand, type RemoteLink } from './index';
+import { handleRemoteCommand, type RemoteLink, remoteLinkDown } from './index';
 
 describe('remoteRenderer rpc-hello 1-RTT prefetch', () => {
   beforeEach(() => {
     mocks.handlers.clear();
+    mocks.desktopMain = null;
+    mocks.headless = false;
+    mocks.setPairHeadless.mockClear();
   });
 
   it('发送带 prefetch 的 rpc-ready 并在后端并行执行允许的只读查询后推送一帧 rpc-prefetch', async () => {
@@ -125,5 +133,58 @@ describe('remoteRenderer rpc-hello 1-RTT prefetch', () => {
 
     await handleRemoteCommand(link, { type: 'rpc-bye', cid: 'cid-1' });
     await handleRemoteCommand(link, { type: 'rpc-bye', cid: 'cid-2' });
+  });
+
+  it('无桌面窗口下断链续连：补发旧 leader=false 之后必须追加权威 leader=true', async () => {
+    const sent: HostToPhone[] = [];
+    const link: RemoteLink = {
+      pairId: 'pair-resume-leader',
+      gzip: false,
+      v2: false,
+      send: (frame) => sent.push(frame),
+    };
+
+    // 1. 首次冷接入：成为 leader
+    await handleRemoteCommand(link, { type: 'rpc-hello', cid: 'cid-leader', kind: 'main' });
+    expect(sent.find((f) => f.type === 'rpc-ready')).toMatchObject({
+      type: 'rpc-ready',
+      cid: 'cid-leader',
+      ok: true,
+      resumed: false,
+      leader: true,
+    });
+    expect(mocks.headless).toBe(false);
+
+    // 2. 切后台/断链：挂起 sender，切 headless，并向保留窗口写入 REMOTE_LEADER_CHANGED(false)
+    sent.length = 0;
+    remoteLinkDown('pair-resume-leader');
+    expect(mocks.headless).toBe(true);
+
+    // 3. 回到前台续连（seq=0，尚未应用断链期间的 leader=false）
+    await handleRemoteCommand(link, {
+      type: 'rpc-hello',
+      cid: 'cid-leader',
+      kind: 'main',
+      seq: 0,
+    });
+    expect(mocks.headless).toBe(false);
+
+    // 按客户端顺序模拟应用 rpc-ready 与后续按序 rpc-event：最终 leader 必须为 true
+    let clientLeader = false;
+    const leaderEvents: { seq: number | undefined; value: unknown }[] = [];
+    for (const frame of sent) {
+      if (frame.type === 'rpc-ready' && frame.ok) {
+        clientLeader = frame.leader;
+      } else if (frame.type === 'rpc-event' && frame.ch === IPC_CHANNELS.REMOTE_LEADER_CHANGED) {
+        const value = Array.isArray(frame.args) ? frame.args[0] : undefined;
+        leaderEvents.push({ seq: frame.seq, value });
+        clientLeader = value === true;
+      }
+    }
+    expect(leaderEvents.map((e) => e.value)).toEqual([false, true]);
+    expect((leaderEvents[1]?.seq ?? 0) > (leaderEvents[0]?.seq ?? 0)).toBe(true);
+    expect(clientLeader).toBe(true);
+
+    await handleRemoteCommand(link, { type: 'rpc-bye', cid: 'cid-leader' });
   });
 });

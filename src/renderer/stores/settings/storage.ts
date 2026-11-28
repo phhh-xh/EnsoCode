@@ -120,6 +120,10 @@ export function createElectronPersistStorage<State>(
               : await window.electronAPI.settings.writeKey(name, next.value, next.ackSeq);
           if (!written) throw new Error(`写入 ${name} 失败`);
         } catch (error) {
+          const current = lastWrite.get(name);
+          if (current && current.state === next.value?.state && current.ackSeq === next.ackSeq) {
+            lastWrite.delete(name);
+          }
           failure ??= { error };
         }
       }

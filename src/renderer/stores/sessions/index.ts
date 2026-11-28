@@ -38,7 +38,7 @@ import type {
   TitleSummaryInput,
   TurnDigest,
 } from '@shared/types/agent';
-import { STALE_SESSION_ERROR } from '@shared/types/agent';
+import { DUPLICATE_QUEUED_DELIVERY, STALE_SESSION_ERROR } from '@shared/types/agent';
 import type { AgentDispatchResult, AgentDispatchTask } from '@shared/types/mentions';
 import type { PairCreatedSession } from '@shared/types/pair';
 import type {
@@ -90,7 +90,7 @@ import { isBuiltinToolEnabledForProject } from '@shared/types/builtinTools';
 import { create } from 'zustand';
 import { persist, type StorageValue } from 'zustand/middleware';
 import { startQueuedSession } from '@/lib/queuedSessionApi';
-import { isLeaderRenderer } from '@/lib/rendererRole';
+import { isLeaderRenderer, onLeaderRendererChanged } from '@/lib/rendererRole';
 import {
   noteSourceAuthorityProjection,
   readSharedSourceAuthority,
@@ -1259,6 +1259,19 @@ export const useSessionsStore = create<SessionsState>()(
         }
         return null;
       }
+      // 非 leader 期间错过正常收束（或空闲态到达的新排队项）的会话：升为 leader 时补泵一次，
+      // 避免续连补发旧的 leader=false 或桌面切托盘交接时把队列消息永久卡住。
+      const missedLeaderFlushIds = new Set<string>();
+      onLeaderRendererChanged((leader) => {
+        if (!leader || missedLeaderFlushIds.size === 0) return;
+        const pending = [...missedLeaderFlushIds];
+        missedLeaderFlushIds.clear();
+        for (const id of pending) {
+          const conversation = get().conversations[id];
+          if (!conversation || conversation.abortRequested) continue;
+          if (!flushQueue(id)) continueGoal(id);
+        }
+      });
       window.electronAPI.agent.onFocusSession((sessionId) => {
         const conversation = get().conversations[sessionId];
         if (!conversation) return;
@@ -1864,7 +1877,12 @@ export const useSessionsStore = create<SessionsState>()(
           // 压缩不发 turn-completed：成功结束后再泵队列，否则排队消息会卡住
           if (event.state === 'end') {
             // 放弃（中断 / 轮失败）不泵；中断标记留给被中断轮的收束消费，这里抢先清会让那一轮把队列泵出去
-            if (!isLeaderRenderer() || event.abandoned || get().conversations[id]?.abortRequested) {
+            if (event.abandoned || get().conversations[id]?.abortRequested) {
+              missedLeaderFlushIds.delete(id);
+              return;
+            }
+            if (!isLeaderRenderer()) {
+              missedLeaderFlushIds.add(id);
               return;
             }
             // 已有投递在途（worker 等压完才起轮）：再泵就是并发 prompt，交给那一轮收束时泵
@@ -2120,6 +2138,9 @@ export const useSessionsStore = create<SessionsState>()(
               : {}),
           });
         });
+        if (event.type === 'status' && event.status === 'running') {
+          missedLeaderFlushIds.delete(id);
+        }
         if (event.type === 'parent-rejected' && event.reason.startsWith(STALE_SESSION_ERROR)) {
           void recoverStaleSession(id, event.reason, event.identity.generation);
         }
@@ -2130,6 +2151,7 @@ export const useSessionsStore = create<SessionsState>()(
           // 中断标记只在发起窗口本地，别的窗口（如 PWA 完整模式）发起的中断靠 worker 的 aborted 认出
           const aborted = event.aborted === true;
           if (get().conversations[id]?.abortRequested || aborted) {
+            missedLeaderFlushIds.delete(id);
             if (get().conversations[id]?.abortRequested) {
               set((state) => patch(state, id, { abortRequested: false }));
             }
@@ -2216,7 +2238,10 @@ export const useSessionsStore = create<SessionsState>()(
               state.conversations[id] ? patch(state, id, { lastTurnDigest: digest }) : state
             );
           }
-          if (!isLeaderRenderer()) return;
+          if (!isLeaderRenderer()) {
+            missedLeaderFlushIds.add(id);
+            return;
+          }
           tryRollingSummarizeTitle(id, event.digest);
           flushQueue(id);
           continueGoal(id);
@@ -2303,13 +2328,29 @@ export const useSessionsStore = create<SessionsState>()(
             | { kind: 'goal' };
         }
       ): Promise<string | null> {
+        const { restore } = rollback;
+        // 出自排队消息的投递带上它的 id，Main 据此拒收别的驱动方已投过的同一条
+        const queued = restore.kind === 'queue' ? ([restore.item.id] as const) : ([] as const);
         const result = await (mode === 'steer'
-          ? window.electronAPI.agent.steer(id, text, images, rollback.deliveryId)
-          : window.electronAPI.agent.prompt(id, text, images, rollback.deliveryId)
+          ? window.electronAPI.agent.steer(id, text, images, rollback.deliveryId, ...queued)
+          : window.electronAPI.agent.prompt(id, text, images, rollback.deliveryId, ...queued)
         ).catch(rejectedAction);
         if (result.ok) return null;
+        if (result.error === DUPLICATE_QUEUED_DELIVERY) {
+          // 上一个驱动方已投过这条（交接时本地队列副本没跟上）：收回回显，不退回队列，接着泵下一条
+          set((state) => {
+            const current = state.conversations[id];
+            if (!current) return state;
+            return patch(state, id, {
+              messages: current.messages.filter(
+                (message) => message.deliveryId !== rollback.deliveryId
+              ),
+            });
+          });
+          if (mode === 'prompt' && isLeaderRenderer()) flushQueue(id);
+          return null;
+        }
         const error = result.error ?? 'send failed';
-        const { restore } = rollback;
         set((state) => {
           const current = state.conversations[id];
           if (!current) return state;
@@ -2455,25 +2496,26 @@ export const useSessionsStore = create<SessionsState>()(
         void deliver(id, text, undefined, 'prompt', { deliveryId, restore: { kind: 'goal' } });
       }
       /** 逐条投递排队消息:每次轮次收束只发队首一条(每条获得完整一轮),下轮结束再发下一条 */
-      function flushQueue(id: string): void {
+      function flushQueue(id: string): boolean {
         const conversation = get().conversations[id];
-        if (conversation?.driver === 'main') return;
+        if (conversation?.driver === 'main') return false;
         if (
           !conversation?.started ||
           conversation.workspaceMigrating ||
           conversation.status !== 'idle'
         )
-          return;
+          return false;
         // 压缩排队/进行中先等压完：上下文还没换形就发下一条会打在旧占用上
-        if (conversation.compaction) return;
+        if (conversation.compaction) return false;
         const [next, ...rest] = conversation.queuedMessages ?? [];
-        if (!next) return;
+        if (!next) return false;
         if (
           (conversation.pendingApprovals ?? []).length > 0 ||
           (conversation.pendingAsks ?? []).length > 0
         ) {
-          return;
+          return false;
         }
+        missedLeaderFlushIds.delete(id);
         const deliveryId = crypto.randomUUID();
         set((state) =>
           patch(state, id, {
@@ -2488,6 +2530,7 @@ export const useSessionsStore = create<SessionsState>()(
           deliveryId,
           restore: { kind: 'queue', item: next },
         });
+        return true;
       }
 
       return {
@@ -3280,6 +3323,7 @@ export const useSessionsStore = create<SessionsState>()(
         removeConversation(id) {
           const conversation = get().conversations[id];
           if (!conversation) return;
+          missedLeaderFlushIds.delete(id);
           // 先等 worker 释放、worktree 解绑成功，再丢弃投影与 authority。
           if (conversation.worktree) {
             if (conversation.workspaceMigrating) return;
@@ -4137,6 +4181,7 @@ export const useSessionsStore = create<SessionsState>()(
           if (!id) return;
           const conversation = get().conversations[id];
           if (!conversation) return;
+          missedLeaderFlushIds.delete(id);
           const waitingUpstream = isUpstreamWaitingGoal(conversation.goal);
           if (!conversation.started && !waitingUpstream) return;
           // 停止 = 用户接管：本轮收束不再自动续跑，活动目标一并暂停（可手动恢复），在跑的子代理一并停掉
@@ -4349,6 +4394,9 @@ export const useSessionsStore = create<SessionsState>()(
 
         pumpQueue(conversationId) {
           if (isLeaderRenderer()) flushQueue(conversationId);
+          else if (get().conversations[conversationId]?.status === 'idle') {
+            missedLeaderFlushIds.add(conversationId);
+          }
         },
 
         updateQueuedMessage(conversationId, messageId, text) {
