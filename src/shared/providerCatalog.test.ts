@@ -115,6 +115,19 @@ describe('provider catalog', () => {
     );
   });
 
+  it('暂时隐藏的订阅入口不出现在向导卡片里，其他订阅照常', () => {
+    const merged = mergeProviderDefinitions([
+      { id: 'google-antigravity', name: 'Antigravity' },
+      { id: 'cursor', name: 'Cursor' },
+    ]);
+    expect(merged.some((definition) => definition.id === 'google-antigravity')).toBe(false);
+    expect(merged.some((definition) => definition.oauthProviderId === 'google-antigravity')).toBe(
+      false
+    );
+    expect(merged.some((definition) => definition.label === 'Antigravity')).toBe(false);
+    expect(merged.find((definition) => definition.id === 'cursor')?.oauthProviderId).toBe('cursor');
+  });
+
   it.each([
     ['anthropic-messages', 'https://api.deepseek.com', 'https://api.deepseek.com/anthropic'],
     ['anthropic-messages', 'https://api.deepseek.com/v1/', 'https://api.deepseek.com/anthropic'],

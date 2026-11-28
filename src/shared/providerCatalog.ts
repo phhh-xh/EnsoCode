@@ -200,6 +200,12 @@ export const STATIC_PROVIDER_DEFINITIONS: readonly ProviderDefinition[] = [
 ];
 
 /**
+ * 暂时从「添加服务商」向导里隐藏的订阅入口（OAuth provider id）。
+ * 只影响新建入口：provider 实现、登录流程和已添加的服务商都保留；删掉对应项即可恢复。
+ */
+export const HIDDEN_PROVIDER_SETUP_OAUTH_IDS: ReadonlySet<string> = new Set(['google-antigravity']);
+
+/**
  * 把运行时 OAuth 能力并入静态定义；OpenAI 使用 Codex 登录，PI 原生登录独立展示。
  * 卡片 ID 只用于向导导航，实际登录保留原始 provider ID，不改变已有凭证或模型绑定。
  */
@@ -216,7 +222,7 @@ export function mergeProviderDefinitions(
   );
 
   for (const oauth of oauthProviders) {
-    if (!oauth.id) continue;
+    if (!oauth.id || HIDDEN_PROVIDER_SETUP_OAUTH_IDS.has(oauth.id)) continue;
     const definitionId =
       oauth.id === 'openai-codex' ? 'openai' : oauth.id === 'openai' ? 'openai-chatgpt' : oauth.id;
     const existing = merged.get(definitionId);
