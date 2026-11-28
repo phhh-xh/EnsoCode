@@ -1,4 +1,5 @@
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, mkdirSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
 import { createInterface } from 'node:readline';
 
 const logPath = process.env.FAKE_AGY_LOG;
@@ -10,6 +11,8 @@ const mcpPermission = process.env.FAKE_AGY_MCP_PERMISSION;
 const noAppend = process.env.FAKE_AGY_NO_APPEND === '1';
 /** `1`：session/resume 回一个非登录类错误，让客户端退回 session/new */
 const resumeFails = process.env.FAKE_AGY_RESUME_FAIL === '1';
+/** `1`：session/new 时在 cwd 里留一个删不掉的目录，模拟 Windows 上 agy 还占着 cwd 时 rmdir 报 EBUSY */
+const lockCwd = process.env.FAKE_AGY_LOCK_CWD === '1';
 /**
  * 按 agy 1.5.18 线上记下的顺序回放：
  * - `steer`：第一个 prompt 流到一半等第二个 prompt；第二个一到，第一个 23ms 内返回 end_turn（无 usage），
@@ -323,6 +326,13 @@ function handle(message) {
     if (method === 'session/resume' && resumeFails) {
       fail(id, -32602, 'unknown session');
       return;
+    }
+    if (lockCwd) {
+      const locked = path.join(process.cwd(), 'locked');
+      mkdirSync(locked);
+      writeFileSync(path.join(locked, 'state'), '');
+      chmodSync(locked, 0o500);
+      log({ method: 'lock-cwd', path: locked });
     }
     respond(id, {
       ...sessionResult,

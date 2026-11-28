@@ -76,6 +76,10 @@ export async function probeAgyAuth(options: {
     return { status: 'unknown' };
   } finally {
     await proc.kill();
-    rmSync(cwd, { recursive: true, force: true });
+    try {
+      rmSync(cwd, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+    } catch {
+      // Windows 上 agy 刚退出时仍可能占着 cwd（EBUSY）；临时目录残留不能盖掉探测结果
+    }
   }
 }

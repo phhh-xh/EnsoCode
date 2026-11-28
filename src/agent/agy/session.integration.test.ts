@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -169,6 +169,31 @@ describe('agy session against the fake CLI', () => {
       timeoutMs: 8_000,
     });
     expect(status).toEqual({ status: 'signed-out', version: '1.5.18' });
+  });
+
+  it('reports signed-in with models even when the probe cwd cannot be removed', async () => {
+    const log = path.join(tempDir(), 'log');
+    const status = await probeAgyAuth({
+      command: process.execPath,
+      args: [fakePath],
+      env: { ...process.env, FAKE_AGY_LOG: log, FAKE_AGY_LOCK_CWD: '1' },
+      clientVersion: '0.3.14',
+      timeoutMs: 8_000,
+    }).catch((error: unknown) => error);
+    const locked = readFileSync(log, 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as { method?: string; path?: string })
+      .find((entry) => entry.method === 'lock-cwd')?.path;
+    if (locked) {
+      chmodSync(locked, 0o700);
+      rmSync(path.dirname(locked), { recursive: true, force: true });
+    }
+    expect(status).toEqual({
+      status: 'signed-in',
+      version: '1.5.18',
+      models: [{ id: 'gemini-4-hydrogen', name: 'Gemini 4 Hydrogen' }],
+    });
   });
 
   it('offers the Enso Host MCP on agy 1.5.18, allows its own tool unasked, and revokes on close', async () => {

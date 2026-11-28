@@ -51,12 +51,21 @@ export function startAgyProcess(options: {
 
 function stopOwned(child: ChildProcess): Promise<void> {
   if (process.platform === 'win32') {
+    if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+    // TerminateProcess 是异步的：等进程真正退出，调用方随后才能删它的 cwd
+    const exited = new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, 2_000);
+      child.once('exit', () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
     try {
       child.kill('SIGTERM');
     } catch {
       // 已经退出
     }
-    return Promise.resolve();
+    return exited;
   }
   return stopProcessGroup(child.pid).then(() => undefined);
 }
