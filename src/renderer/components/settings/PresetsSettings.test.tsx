@@ -1,29 +1,73 @@
 import type { PresetImportDraft } from '@shared/presetImport';
+import type { Preset } from '@shared/types';
 import { parseHTML } from 'linkedom';
 import { act, type ComponentProps, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const harness = vi.hoisted(() => ({
-  t: (key: string) => key,
+  t: (key: string, params?: Record<string, string | number>) =>
+    key.replace(/\{\{(\w+)\}\}/g, (match, token: string) =>
+      params?.[token] === undefined ? match : String(params[token])
+    ),
   readSystemPrompt: vi.fn(async () => ({ ok: true as const, content: 'builtin role prompt' })),
   writeSystemPrompt: vi.fn(async () => ({ ok: true as const })),
+  presets: [] as Preset[],
+  removePreset: vi.fn(),
 }));
 
 vi.mock('@/i18n', () => ({ useI18n: () => ({ t: harness.t }) }));
 vi.mock('@/stores/settings', () => ({
   useSettingsStore: (select: (state: unknown) => unknown) =>
     select({
-      presets: [],
+      presets: harness.presets,
       skills: [],
       mcpServers: [],
       instructions: [],
       defaultPresetId: 'default',
       addPreset: vi.fn(),
       updatePreset: vi.fn(),
-      removePreset: vi.fn(),
+      removePreset: harness.removePreset,
       setDefaultPresetId: vi.fn(),
     }),
+}));
+vi.mock('@/components/chat/ConfirmDialog', () => ({
+  ConfirmDialog: ({
+    open,
+    title,
+    description,
+    confirmLabel,
+    cancelLabel,
+    onConfirm,
+    onOpenChange,
+  }: {
+    open: boolean;
+    title: string;
+    description?: string;
+    confirmLabel: string;
+    cancelLabel?: string;
+    onConfirm: () => void;
+    onOpenChange: (open: boolean) => void;
+  }) =>
+    open ? (
+      <div data-confirm-dialog="">
+        <h2>{title}</h2>
+        <p data-confirm-description="">{description}</p>
+        <button type="button" data-confirm-cancel="" onClick={() => onOpenChange(false)}>
+          {cancelLabel ?? 'Cancel'}
+        </button>
+        <button
+          type="button"
+          data-confirm-accept=""
+          onClick={() => {
+            onConfirm();
+            onOpenChange(false);
+          }}
+        >
+          {confirmLabel}
+        </button>
+      </div>
+    ) : null,
 }));
 vi.mock('@/plugins/usePluginPresets', () => ({ useEnabledPluginPresets: () => [] }));
 vi.mock('@/hooks/useScrollChain', () => ({ useScrollChain: () => ({ current: null }) }));
@@ -132,6 +176,7 @@ beforeEach(() => {
   });
   Object.assign(dom.window.HTMLElement.prototype, { attachEvent: vi.fn(), detachEvent: vi.fn() });
   vi.clearAllMocks();
+  harness.presets = [];
   container = dom.document.getElementById('root') as unknown as HTMLElement;
   root = createRoot(container);
 });
@@ -184,5 +229,62 @@ describe('PresetsSettings 高级面板提示词框缩放布局', () => {
     expect(tokens.some((token) => /^h-/.test(token))).toBe(false);
     expect(tokens).toContain('[&_textarea]:h-32');
     expect(tokens).toContain('[&_textarea]:resize-y');
+  });
+});
+
+describe('PresetsSettings 删除预设需二次确认', () => {
+  const preset = (id: string, name: string): Preset => ({
+    id,
+    name,
+    skillIds: [],
+    mcpServerIds: [],
+  });
+
+  const presetNames = () =>
+    [...container.querySelectorAll('section span.truncate')].map((node) => node.textContent);
+  const deleteButtons = () => [
+    ...container.querySelectorAll<HTMLButtonElement>('button[aria-label="Delete"]'),
+  ];
+  const confirmDialog = () => container.querySelector('[data-confirm-dialog]');
+
+  beforeEach(async () => {
+    harness.presets = [preset('alpha', 'Alpha'), preset('beta', 'Beta')];
+    await act(async () => root.render(<PresetsSettings />));
+  });
+
+  it('点删除先弹确认框，写明被点中预设的名字与不可恢复，按钮是「删除」/「取消」，此时还没删', async () => {
+    expect(confirmDialog()).toBeNull();
+    await act(async () => deleteButtons()[1].click());
+
+    expect(harness.removePreset).not.toHaveBeenCalled();
+    const dialog = confirmDialog();
+    expect(dialog?.querySelector('h2')?.textContent).toBe('Delete preset?');
+    expect(dialog?.querySelector('[data-confirm-description]')?.textContent).toBe(
+      'This permanently deletes the "Beta" preset. This cannot be undone.'
+    );
+    expect(dialog?.querySelector('[data-confirm-accept]')?.textContent).toBe('Delete');
+    expect(dialog?.querySelector('[data-confirm-cancel]')?.textContent).toBe('Cancel');
+  });
+
+  it('取消后不删除，预设仍在列表里，确认框关闭', async () => {
+    await act(async () => deleteButtons()[0].click());
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[data-confirm-cancel]')!.click()
+    );
+
+    expect(harness.removePreset).not.toHaveBeenCalled();
+    expect(confirmDialog()).toBeNull();
+    expect(presetNames()).toEqual(['Alpha', 'Beta']);
+  });
+
+  it('确认后才删除，且删的是被点中的那个预设而不是第一个', async () => {
+    await act(async () => deleteButtons()[1].click());
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[data-confirm-accept]')!.click()
+    );
+
+    expect(harness.removePreset).toHaveBeenCalledTimes(1);
+    expect(harness.removePreset).toHaveBeenCalledWith('beta');
+    expect(confirmDialog()).toBeNull();
   });
 });

@@ -3,6 +3,7 @@ import type { PresetImportDraft } from '@shared/presetImport';
 import type { InstructionEntry, Preset } from '@shared/types';
 import { ChevronDown, Eye, Layers, Loader2, Pencil, Plus, Trash2 } from 'lucide-react';
 import * as React from 'react';
+import { ConfirmDialog } from '@/components/chat/ConfirmDialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -40,6 +41,7 @@ export function PresetsSettings() {
   const [importing, setImporting] = React.useState(false);
   const [importError, setImportError] = React.useState('');
   const [previewDefault, setPreviewDefault] = React.useState(false);
+  const [pendingRemove, setPendingRemove] = React.useState<Preset | null>(null);
 
   const importFromUrl = async () => {
     const url = importUrl.trim();
@@ -177,7 +179,12 @@ export function PresetsSettings() {
               <Button variant="ghost" size="icon-sm" onClick={() => setEditing(preset)}>
                 <Pencil className="h-4 w-4" />
               </Button>
-              <Button variant="ghost" size="icon-sm" onClick={() => removePreset(preset.id)}>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label={t('Delete')}
+                onClick={() => setPendingRemove(preset)}
+              >
                 <Trash2 className="h-4 w-4" />
               </Button>
             </div>
@@ -222,6 +229,24 @@ export function PresetsSettings() {
         />
       )}
       {previewDefault && <DefaultSystemPromptDialog onClose={() => setPreviewDefault(false)} />}
+      <ConfirmDialog
+        open={pendingRemove !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingRemove(null);
+        }}
+        title={t('Delete preset?')}
+        description={
+          pendingRemove
+            ? t('This permanently deletes the "{{name}}" preset. This cannot be undone.', {
+                name: pendingRemove.name,
+              })
+            : undefined
+        }
+        confirmLabel={t('Delete')}
+        onConfirm={() => {
+          if (pendingRemove) removePreset(pendingRemove.id);
+        }}
+      />
     </SettingsPage>
   );
 }

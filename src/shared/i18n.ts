@@ -4739,6 +4739,9 @@ export const zhTranslations: Record<string, string> = {
   'Clear search': '清空搜索',
   'Delete skill?': '删除技能？',
   'This removes "{{name}}" from your skills list.': '将从技能列表中移除「{{name}}」。',
+  'Delete preset?': '删除预设？',
+  'This permanently deletes the "{{name}}" preset. This cannot be undone.':
+    '将永久删除预设「{{name}}」，且无法恢复。',
   'Delete SSH connection?': '删除 SSH 连接？',
   Metric: '指标',
   'Add project ({{shortcut}})': '添加项目（{{shortcut}}）',
