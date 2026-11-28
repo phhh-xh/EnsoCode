@@ -22,16 +22,71 @@ export function parseDeskChrome(raw: string | null): DeskChrome | null {
   }
 }
 
-/** 带透明度 0 的颜色（含 transparent）视为没铺底，继续往上找 */
-const opaque = (color: string) =>
-  color !== '' && color !== 'transparent' && !/^rgba\(.*,\s*0\)$/.test(color);
+function parseAlpha(token: string): number {
+  const trimmed = token.trim();
+  if (!trimmed) return Number.NaN;
+  const value = Number.parseFloat(trimmed);
+  if (!Number.isFinite(value)) return Number.NaN;
+  return trimmed.endsWith('%') ? value / 100 : value;
+}
 
-function edgeColor(doc: Document, y: number): string | null {
+/**
+ * 只有完全不透明（alpha === 1）的颜色才适合铺安全区底色：
+ * 侧栏/弹窗遮罩（如 Tailwind v4 `bg-black/40` → `oklab(0 0 0 / 0.4)` 或 `rgba(0, 0, 0, 0.4)`）
+ * 与壁纸半透明层都带 alpha < 1，不能当实底采样。
+ */
+export function isOpaqueColor(color: string): boolean {
+  const raw = color.trim().toLowerCase();
+  if (!raw || raw === 'transparent') return false;
+  if (raw.startsWith('#')) {
+    const hex = raw.slice(1);
+    if (hex.length === 4) return hex[3] === 'f';
+    if (hex.length === 8) return hex.slice(6) === 'ff';
+    return hex.length === 3 || hex.length === 6;
+  }
+  const slash = raw.lastIndexOf('/');
+  if (slash !== -1 && raw.endsWith(')')) {
+    return parseAlpha(raw.slice(slash + 1, -1)) >= 1;
+  }
+  const legacy = /^(?:rgba|hsla)\(([^)]+)\)$/.exec(raw);
+  if (legacy) {
+    const parts = legacy[1].split(',');
+    if (parts.length === 4) return parseAlpha(parts[3]) >= 1;
+  }
+  return true;
+}
+
+function isElementOpaque(view: Window, el: Element): boolean {
+  for (let cur: Element | null = el; cur; cur = cur.parentElement) {
+    const opacity = view.getComputedStyle(cur).opacity;
+    if (opacity !== '' && Number.parseFloat(opacity) < 1) return false;
+  }
+  return true;
+}
+
+export function edgeColor(doc: Document, y: number): string | null {
   const view = doc.defaultView;
   if (!view) return null;
-  for (let el = doc.elementFromPoint(view.innerWidth / 2, y); el; el = el.parentElement) {
+  const x = view.innerWidth / 2;
+  const stack: Element[] =
+    typeof doc.elementsFromPoint === 'function' ? doc.elementsFromPoint(x, y) : [];
+  const seen = new Set<Element>();
+  const candidates: Element[] = [];
+  const add = (el: Element | null) => {
+    if (el && !seen.has(el)) {
+      seen.add(el);
+      candidates.push(el);
+    }
+  };
+  for (const el of stack) add(el);
+  for (let el: Element | null = stack[0] ?? doc.elementFromPoint(x, y); el; el = el.parentElement) {
+    add(el);
+  }
+  for (const el of candidates) {
     const color = view.getComputedStyle(el).backgroundColor;
-    if (opaque(color)) return toRgb(color);
+    if (!isOpaqueColor(color) || !isElementOpaque(view, el)) continue;
+    const rgb = toRgb(color);
+    if (isOpaqueColor(rgb)) return rgb;
   }
   return null;
 }
@@ -48,8 +103,12 @@ export function paintDeskChrome(iframe: HTMLIFrameElement | undefined): void {
   const doc = iframe?.contentDocument;
   const view = doc?.defaultView;
   if (!iframe || !doc?.body || !view) return;
-  const fallback = view.getComputedStyle(doc.documentElement).getPropertyValue('--background');
-  const base = fallback ? toRgb(fallback.trim()) : null;
+  const fallback = view
+    .getComputedStyle(doc.documentElement)
+    .getPropertyValue('--background')
+    .trim();
+  const baseRaw = fallback ? toRgb(fallback) : null;
+  const base = baseRaw && isOpaqueColor(baseRaw) ? baseRaw : null;
   const top = edgeColor(doc, 1) ?? base;
   const bottom = edgeColor(doc, view.innerHeight - 1) ?? base;
   if (!top || !bottom) return;

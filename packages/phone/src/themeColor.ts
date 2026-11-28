@@ -26,7 +26,9 @@ export function toRgb(color: string): string {
     if (!ctx) return color;
     ctx.fillStyle = color;
     ctx.fillRect(0, 0, 1, 1);
-    const [r, g, b] = ctx.getImageData(0, 0, 1, 1).data;
+    const [r, g, b, a] = ctx.getImageData(0, 0, 1, 1).data;
+    if (a === 0) return 'transparent';
+    if (a < 255) return `rgba(${r}, ${g}, ${b}, ${Number((a / 255).toFixed(3))})`;
     return `rgb(${r}, ${g}, ${b})`;
   } catch {
     return color;
