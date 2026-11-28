@@ -7,7 +7,7 @@ import {
   useSensor,
   useSensors,
 } from '@dnd-kit/core';
-import { AnimatePresence, motion } from 'framer-motion';
+import { motion, useMotionValue, useTransform } from 'framer-motion';
 import {
   FoldHorizontal,
   Menu,
@@ -71,12 +71,14 @@ import { addToast, ToastProvider } from '@/components/ui/toast';
 import { useAutoArchiveScan } from '@/hooks/useAutoArchiveScan';
 import { useBackgroundImage } from '@/hooks/useBackgroundImage';
 import { useDockBadge } from '@/hooks/useDockBadge';
+import { settleProgress, useEdgeSwipe } from '@/hooks/useEdgeSwipe';
 import { useGenerationStallTimeout } from '@/hooks/useGenerationStallTimeout';
 import { useRecoverInterruptedTurns } from '@/hooks/useInterruptedSessionRecovery';
 import { useOpenFolderRequests } from '@/hooks/useOpenFolderRequests';
 import { isMobileWidth, useIsMobile, useViewportWidth } from '@/hooks/useViewport';
 import { useWindowsWindowChrome } from '@/hooks/useWindowsWindowChrome';
 import { useI18n } from '@/i18n';
+import { clamp01 } from '@/lib/edgeSwipe';
 import { effectiveKeybindings, eventToBinding, isEventInSidePanel } from '@/lib/keybindings';
 import { bindMainSettingsRequests } from '@/lib/mainSettingsRequests';
 import { easeOutLayout, springStandard } from '@/lib/motion';
@@ -187,6 +189,15 @@ export default function App() {
   const viewportWidth = useViewportWidth();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const closeDrawer = useCallback(() => setDrawerOpen(false), []);
+  const drawerWidth = Math.min(320, Math.round(viewportWidth * 0.85));
+  // 抽屉开合进度 0..1：按钮/点遮罩走状态 effect，边缘手势直接跟手写入
+  const leftProgress = useMotionValue(0);
+  const drawerX = useTransform(leftProgress, (p) => `${(clamp01(p) - 1) * 105}%`);
+  const backdropOpacity = useTransform(leftProgress, clamp01);
+  const backdropVisibility = useTransform(leftProgress, (p) => (p > 0 ? 'visible' : 'hidden'));
+  useEffect(() => {
+    settleProgress(leftProgress, drawerOpen ? 1 : 0, springStandard);
+  }, [drawerOpen, leftProgress]);
   useEffect(() => {
     if (!isMobile) setDrawerOpen(false);
   }, [isMobile]);
@@ -201,6 +212,7 @@ export default function App() {
   const chatWide = useSettingsStore((s) => s.chatWide);
   const activeConversationId = useSessionsStore((s) => s.activeId);
   const sideOpen = useSidePanelShown(activeConversationId);
+  const rightProgress = useMotionValue(sideOpen ? 1 : 0);
   const sideWidth = useSidePanelStore(
     (s) => s.uiByConversation[activeConversationId ?? '']?.width ?? s.lastWidth
   );
@@ -598,6 +610,18 @@ export default function App() {
     fullscreen: sideFullscreen,
     isMobile,
   });
+  const swiping = useEdgeSwipe({
+    enabled: isMobile && !botModeActive && !workbenchHidden,
+    leftOpen: drawerOpen,
+    rightOpen: sideOpen,
+    canOpenRight: Boolean(activeConversationId),
+    leftWidth: drawerWidth,
+    leftProgress,
+    rightProgress,
+    onSettle: (panel, open) => (panel === 'left' ? setDrawerOpen(open) : toggleSidePanel()),
+  });
+  // 往回拖右侧面板时聊天区要露在它底下
+  const hideMainUnderSide = sideCoversMain && swiping !== 'right';
   // Bot 模式开启时顶栏居中是 Bot 切换器，标签会与之重叠，整体让位
   const headerSessionTabs =
     headerSessionTabsEnabled &&
@@ -783,30 +807,24 @@ export default function App() {
             <DndContext sensors={dndSensors} collisionDetection={dndCollision}>
               {isMobile ? (
                 <>
-                  <AnimatePresence>
-                    {drawerOpen && (
-                      <motion.div
-                        key="drawer-backdrop"
-                        className="fixed inset-0 bg-black/40 backdrop-blur-[2px]"
-                        style={{ zIndex: Z_INDEX.MOBILE_DRAWER }}
-                        initial={{ opacity: 0 }}
-                        animate={{ opacity: 1 }}
-                        exit={{ opacity: 0 }}
-                        onClick={closeDrawer}
-                      />
-                    )}
-                  </AnimatePresence>
+                  <motion.div
+                    className="fixed inset-0 bg-black/40 backdrop-blur-[2px]"
+                    style={{
+                      zIndex: Z_INDEX.MOBILE_DRAWER,
+                      opacity: backdropOpacity,
+                      visibility: backdropVisibility,
+                      pointerEvents: drawerOpen ? 'auto' : 'none',
+                    }}
+                    onClick={closeDrawer}
+                  />
                   <motion.div
                     data-enso="mobile-drawer"
                     className="fixed inset-y-0 left-0 flex border-r bg-popover text-popover-foreground shadow-xl backdrop-blur-md"
-                    style={{ zIndex: Z_INDEX.MOBILE_DRAWER }}
-                    initial={false}
-                    animate={{ x: drawerOpen ? 0 : '-105%' }}
-                    transition={springStandard}
+                    style={{ zIndex: Z_INDEX.MOBILE_DRAWER, x: drawerX }}
                     inert={!drawerOpen}
                   >
                     <Sidebar
-                      width={Math.min(320, Math.round(viewportWidth * 0.85))}
+                      width={drawerWidth}
                       collapsed={false}
                       onToggleCollapse={closeDrawer}
                       onOpenSearch={() => setSearchOpen(true)}
@@ -854,7 +872,7 @@ export default function App() {
                   )}
                   // 全屏或窄屏右侧面板开壁纸时是透明的，铺开后把被盖住的对话藏掉，否则会透上来
                   style={
-                    sideCoversMain
+                    hideMainUnderSide
                       ? {
                           visibility: 'hidden',
                           transition: `visibility 0s ${easeOutLayout.duration}s`,
@@ -894,6 +912,7 @@ export default function App() {
                     resizing={sideResizing}
                     card={desktopShell}
                     titleRow={titleRowPanel}
+                    mobileProgress={rightProgress}
                   />
                 </Suspense>
               </div>

@@ -9,7 +9,13 @@ import type {
   IWatermarkPanelProps,
 } from 'dockview-react';
 import { DockviewReact, themeDark, themeLight } from 'dockview-react';
-import { motion } from 'framer-motion';
+import {
+  type MotionValue,
+  motion,
+  useMotionValue,
+  useMotionValueEvent,
+  useTransform,
+} from 'framer-motion';
 import {
   FolderOpen,
   GitCompare,
@@ -44,9 +50,12 @@ import {
   ContextMenuTrigger,
 } from '@/components/ui/context-menu';
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from '@/components/ui/menu';
+import { settleProgress } from '@/hooks/useEdgeSwipe';
 import { useIsMobile } from '@/hooks/useViewport';
 import { useI18n } from '@/i18n';
 import { holesClipPath } from '@/lib/backgroundClip';
+import { clamp01 } from '@/lib/edgeSwipe';
+import { easeOutLayout, instantTransition } from '@/lib/motion';
 import { isRemoteClient } from '@/lib/remoteClient';
 import {
   addSidePanelBrowser,
@@ -1258,6 +1267,7 @@ export function SidePanel({
   resizing = false,
   card = false,
   titleRow = false,
+  mobileProgress,
 }: {
   width: number;
   resizing?: boolean;
@@ -1265,6 +1275,8 @@ export function SidePanel({
   card?: boolean;
   /** mac 桌面外壳：并排时不做卡片，贴右/下边并伸进顶栏行，tab 条与顶栏齐平、左边线即分割 */
   titleRow?: boolean;
+  /** 窄屏开合进度 0..1，边缘手势跟手写入；不传则只随开合状态动画 */
+  mobileProgress?: MotionValue<number>;
 }) {
   const { t } = useI18n();
   const activeIdForUi = useSessionsStore((s) => s.activeId);
@@ -1362,7 +1374,9 @@ export function SidePanel({
    * 弹簧过冲/打开首帧时 aside 比内容宽出来的那一条就会露出没有面板遮罩的裸壁纸。
    * 全屏 cover 态 aside 本身是实底，内容照常铺满。非卡片态 border-l 占 1px，内容按 content-box 扣掉。
    */
-  const contentW = cover ? undefined : Math.max(0, width - (open && !card ? 1 : 0));
+  // 窄屏恒按全屏铺：开合靠横移，不再收窄宽度
+  const coverLayout = cover || isMobile;
+  const contentW = coverLayout ? undefined : Math.max(0, width - (open && !card ? 1 : 0));
   const activeId = conversationId;
   const skipWidthAnim = shouldSkipSidePanelWidthAnim({
     resizing,
@@ -1371,6 +1385,16 @@ export function SidePanel({
   });
   const targetW = fullscreen ? workspaceW || width : open ? width : 0;
   const inTitleRow = Boolean(titleRow) && !isMobile;
+  // 窄屏是全宽抽屉：宽度恒定，按进度横移，可被边缘手势跟手拖动
+  const ownProgress = useMotionValue(open ? 1 : 0);
+  const sheetProgress = mobileProgress ?? ownProgress;
+  const sheetX = useTransform(sheetProgress, (p) => `${(1 - clamp01(p)) * 100}%`);
+  const [sheetShown, setSheetShown] = useState(() => sheetProgress.get() > 0);
+  useMotionValueEvent(sheetProgress, 'change', (p) => setSheetShown(p > 0));
+  useEffect(() => {
+    if (!isMobile) return;
+    settleProgress(sheetProgress, open ? 1 : 0, skipWidthAnim ? instantTransition : easeOutLayout);
+  }, [isMobile, open, sheetProgress, skipWidthAnim]);
   if (activeId && !mountedIds.includes(activeId)) {
     setMountedIds((ids) => (ids.includes(activeId) ? ids : [...ids, activeId]));
   }
@@ -1383,17 +1407,23 @@ export function SidePanel({
         ref={asideRef}
         data-slot="side-panel"
         initial={false}
-        animate={{ width: targetW }}
+        animate={{ width: isMobile ? workspaceW || width : targetW }}
         // 定位走内联：主题 CSS 常给 [data-enso="side-panel"] 写 position:relative 挂角标，会压过 absolute 类，全屏就铺不开
         style={
-          cover
-            ? { position: 'absolute' }
+          coverLayout
+            ? isMobile
+              ? { position: 'absolute', x: sheetX }
+              : { position: 'absolute' }
             : {
                 position: 'relative',
                 maxWidth: `max(0px, calc(100% - ${CHAT_MIN_WIDTH + handleW}px))`,
               }
         }
-        transition={sidePanelWidthTransition({ skip: skipWidthAnim, cover, targetW })}
+        transition={
+          isMobile
+            ? instantTransition
+            : sidePanelWidthTransition({ skip: skipWidthAnim, cover, targetW })
+        }
         onAnimationStart={() => setLayoutAnimating(true)}
         onAnimationComplete={() => {
           setLayoutAnimating(false);
@@ -1405,8 +1435,12 @@ export function SidePanel({
           // 关着时不放宽：dockview 的 .dv-view.visible 会顶掉外层 invisible，内容会从余量里漏出一条
           inTitleRow && open ? 'overflow-clip [overflow-clip-margin:4px]' : 'overflow-hidden',
           // 平时透明让底层挖孔透出 guest；全屏盖在 ChatView 上、收起动画中必须实底
-          open && (inTitleRow || !cover) ? 'bg-transparent' : inTitleRow ? '' : 'bg-background',
-          !cover
+          open && (inTitleRow || !coverLayout)
+            ? 'bg-transparent'
+            : inTitleRow
+              ? ''
+              : 'bg-background',
+          !coverLayout
             ? 'shrink-0'
             : inTitleRow
               ? 'top-px right-[8px] bottom-[8px]'
@@ -1426,10 +1460,10 @@ export function SidePanel({
         data-enso="side-panel"
         data-title-row={inTitleRow || undefined}
       >
-        {open && (inTitleRow || !cover) ? (
+        {open && (inTitleRow || !coverLayout) ? (
           <SurfaceUnderHoles titleRow={inTitleRow} full={cover} />
         ) : null}
-        {open && !cover && contentW !== undefined ? (
+        {open && !coverLayout && contentW !== undefined ? (
           // 过冲补条：只盖 [内容右边缘, aside 右边缘]，稳态宽度为 0，不会压到 Browser 挖孔
           <div
             aria-hidden
@@ -1443,9 +1477,9 @@ export function SidePanel({
         <div
           className={cn(
             'relative flex h-full min-h-0 flex-col',
-            cover && 'w-full',
+            coverLayout && 'w-full',
             // invisible 而非 hidden：关着时 dockview 也按目标宽度排好，打开首帧即满遮罩
-            !open && 'invisible'
+            !open && !(isMobile && sheetShown) && 'invisible'
           )}
           style={{
             width: contentW,
