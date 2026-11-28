@@ -17,6 +17,17 @@ import { cn } from '@/lib/utils';
 const toastManager = Toast.createToastManager();
 const anchoredToastManager = Toast.createToastManager();
 
+/**
+ * 堆叠 toast 的内容层。收起时后面几条只露边、点不到；展开（悬停、触屏点过、键盘聚焦）后每条都要能点：
+ * 只写 data-behind:pointer-events-none 的话，展开后后面那条看得见却点不到 × 和操作按钮。
+ */
+export const TOAST_CONTENT_CLASS =
+  'pointer-events-auto relative px-3.5 py-3 text-sm transition-opacity duration-250 data-behind:not-data-expanded:pointer-events-none data-behind:opacity-0 data-expanded:opacity-100';
+
+/** 关闭按钮：图标 16px，触屏把命中区向外扩到约 38px */
+export const TOAST_CLOSE_CLASS =
+  'absolute right-2 top-2 shrink-0 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground pointer-coarse:after:absolute pointer-coarse:after:-inset-2.5';
+
 type BaseToastObject = ReturnType<typeof Toast.useToastManager>['toasts'][number];
 type BaseToastAddOptions = Parameters<typeof toastManager.add>[0];
 
@@ -127,11 +138,11 @@ function Toasts({ position = 'bottom-right' }: { position: ToastPosition }) {
               }
               toast={toast}
             >
-              <Toast.Content className="pointer-events-auto relative px-3.5 py-3 text-sm transition-opacity duration-250 data-behind:pointer-events-none data-behind:opacity-0 data-expanded:opacity-100">
+              <Toast.Content className={TOAST_CONTENT_CLASS}>
                 {/* 关闭按钮 - 右上角 */}
                 <Toast.Close
                   aria-label="Close notification"
-                  className="absolute right-2 top-2 shrink-0 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+                  className={TOAST_CLOSE_CLASS}
                   data-slot="toast-close"
                 >
                   <XIcon className="h-4 w-4" />
