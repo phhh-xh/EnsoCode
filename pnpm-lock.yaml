@@ -14,9 +14,6 @@ patchedDependencies:
   '@rahularya01/pi-cursor@1.4.39':
     hash: 20f1fb7abac3c13ae2ae558c1cbc6f036dbac222b87b10f53550ffba0caf6486
     path: patches/@rahularya01__pi-cursor@1.4.39.patch
-  dockview-core@8.2.0:
-    hash: c48d566af696434dc4477029746a00b8c36f6f13796860de2ef2d4abe460fa75
-    path: patches/dockview-core@8.2.0.patch
   electron-vite@5.0.0:
     hash: 7b9f2c1cf3d2fe10c6e7513586e3755a66d42f7259e1f1732f90d16ec5725865
     path: patches/electron-vite@5.0.0.patch
@@ -207,8 +204,8 @@ importers:
         specifier: 2.2.0
         version: 2.2.0(cytoscape@3.34.2)
       dockview-react:
-        specifier: ^8.2.0
-        version: 8.2.0(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+        specifier: ^8.10.0
+        version: 8.10.0(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       electron:
         specifier: ^45.3.1
         version: 45.3.1
@@ -3415,17 +3412,17 @@ packages:
   dmg-builder@26.18.0:
     resolution: {integrity: sha512-ozCGC54wi2C1RkS2v69y9lQxvoQ1Coh+iT8CmWiyY8y1ZuOKVvuNson2Hd+HEOs9+EZNNsOBbzKgQZ4SNqWd0w==}
 
-  dockview-core@8.2.0:
-    resolution: {integrity: sha512-+L+xdvmO1b4in8rVkFtQM13IkPDKqDLoHJvq5HtAIsMxsPptSVveKeViYBqquaoHF+t0xb9f6692gTeKnjCKGw==}
+  dockview-core@8.10.0:
+    resolution: {integrity: sha512-11MpSwPbeCDkdHoq5dwG9cdy9Hr0chQ0idsJlUw5CuN0npOUk1MI0Mlt0dRMYHjgE34lmDUbEtRJGimscnveZA==}
 
-  dockview-react@8.2.0:
-    resolution: {integrity: sha512-OHa/4uuaw3VpHVkGophdYh2U1f5tOvp/ANf5CAE3QQVh2oSMKNimaWaFXEg/R1wGBdZogQyYOKQSU+wLrE0taw==}
+  dockview-react@8.10.0:
+    resolution: {integrity: sha512-AC8WadoHa+j8nVQlp/hKu0+9j/V0PW9cWYV3b6//QhufFgSIfXjzsKc7bIHLVdEduGhuRek7adb8jRumGlOXPg==}
     peerDependencies:
       react: ^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0
       react-dom: ^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0
 
-  dockview@8.2.0:
-    resolution: {integrity: sha512-Jj+fnFWSrdEhF+1DmpGNYjEvyqf7J0FHkDqsD98wL4WOYB2CSKavDCL49B3LHIGYvWNN7Q1O1j4p7Pts38CM5A==}
+  dockview@8.10.0:
+    resolution: {integrity: sha512-V0uy9ynvIIgLJHqcQ1RXS1NH8CDiYEtg7fT+UT3wD8732b1GDzUdxsKUXFdZEz6H/mE0G+IOKY5JUxgCUjAADQ==}
 
   dom-serializer@2.0.0:
     resolution: {integrity: sha512-wIkAryiqt/nV5EQKqQpo3SToSOV9J0DnbJqwK7Wv/Trc92zIAYZ4FlMu+JPFW1DfGFt81ZTCGgDEabffXeLyJg==}
@@ -8731,17 +8728,17 @@ snapshots:
       - electron-builder-squirrel-windows
       - supports-color
 
-  dockview-core@8.2.0(patch_hash=c48d566af696434dc4477029746a00b8c36f6f13796860de2ef2d4abe460fa75): {}
+  dockview-core@8.10.0: {}
 
-  dockview-react@8.2.0(react-dom@19.2.8(react@19.2.8))(react@19.2.8):
+  dockview-react@8.10.0(react-dom@19.2.8(react@19.2.8))(react@19.2.8):
     dependencies:
-      dockview: 8.2.0
+      dockview: 8.10.0
       react: 19.2.8
       react-dom: 19.2.8(react@19.2.8)
 
-  dockview@8.2.0:
+  dockview@8.10.0:
     dependencies:
-      dockview-core: 8.2.0(patch_hash=c48d566af696434dc4477029746a00b8c36f6f13796860de2ef2d4abe460fa75)
+      dockview-core: 8.10.0
 
   dom-serializer@2.0.0:
     dependencies:
