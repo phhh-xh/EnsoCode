@@ -5,7 +5,6 @@ import {
   type PendingDispatch,
   type SecretaryBoard,
   type SecretaryBoardTodo,
-  type SecretaryDemandThreadView,
   type SecretaryTodoMutate,
   type TodoProblemCode,
 } from '@shared/types/secretary';
@@ -13,23 +12,21 @@ import { formatRetryClock } from '@shared/upstreamRecovery';
 import {
   ArrowUpRight,
   CheckCircle2,
-  ChevronRight,
   Coffee,
   Pencil,
   Plus,
   Send,
   ShieldAlert,
-  Square,
   Trash2,
   Undo2,
 } from 'lucide-react';
-import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { ApprovalBar } from '@/components/chat/ApprovalBar';
 import { AskBar } from '@/components/chat/AskBar';
 import { QueuedSessionButtons } from '@/components/chat/QueuedSessionCard';
 import { HOVER_ROW_CLASS, HoverActions } from '@/components/ui/hover-actions';
 import { useI18n } from '@/i18n';
-import { formatClock, formatRelativeTime } from '@/lib/time';
+import { formatRelativeTime } from '@/lib/time';
 import { cn } from '@/lib/utils';
 import { useSecretaryStore } from '@/stores/secretary';
 import { openSessionFromSecretary } from '@/stores/secretaryReturn';
@@ -39,33 +36,12 @@ import { DependencyNote } from './SecretaryDependencyLinks';
 import { SecretaryFace } from './SecretaryFace';
 import { SecretaryProposalRow } from './SecretaryProposalRow';
 import { RunningCards } from './SecretaryRunningList';
-import {
-  type FeedEvent,
-  type FeedTone,
-  type SecretarySessionCard,
-  secretaryDigest,
-  sessionFeed,
-} from './secretaryDigest';
+import { type SecretarySessionCard, sessionFeed } from './secretaryDigest';
 import { useSecretaryFace } from './useSecretaryFace';
-import { useSecretaryFeed } from './useSecretaryFeed';
 
 function mutateTodo(request: SecretaryTodoMutate, secretaryId?: string): void {
   void window.electronAPI.secretary.mutateTodo(request, secretaryId);
 }
-
-/** 今天只给钟点，更早给相对时间：时间线上一眼看出新旧 */
-function feedTime(at: number, locale: string, now: number): string {
-  const sameDay = new Date(at).toDateString() === new Date(now).toDateString();
-  return sameDay ? formatClock(at, locale) : formatRelativeTime(at, locale, now);
-}
-
-const TONE_DOT: Record<FeedTone, string> = {
-  ok: 'border-success bg-success',
-  warn: 'border-warning bg-warning',
-  bad: 'border-destructive bg-destructive',
-  run: 'border-success bg-background',
-  idle: 'border-subtle-foreground bg-background',
-};
 
 const ACTION_CLASS =
   'flex size-5 shrink-0 items-center justify-center rounded-[5px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground';
@@ -107,70 +83,15 @@ const PROBLEM_LABEL: Record<TodoProblemCode, string> = {
   deleted: 'The session was deleted',
 };
 
-/** 计数卡：点了滚到下面对应的列表 */
-function Stat({
-  value,
-  label,
-  warn,
-  target,
-  section,
-}: {
-  value: number;
-  label: string;
-  warn?: boolean;
-  target: string;
-  section: RefObject<HTMLElement | null>;
-}) {
-  return (
-    <button
-      type="button"
-      data-enso="secretary-stat"
-      data-target={target}
-      data-warn={warn || undefined}
-      onClick={() => section.current?.scrollIntoView({ block: 'start', behavior: 'smooth' })}
-      className={cn(
-        'rounded-[10px] border px-2.5 py-2 text-left transition-colors',
-        warn ? 'border-warning/40 bg-warning/5 hover:bg-warning/10' : 'border-border hover:bg-muted'
-      )}
-    >
-      <div className="text-[18px] font-semibold tabular-nums">{value}</div>
-      <div className="text-[11.5px] text-muted-foreground">{label}</div>
-    </button>
-  );
-}
+const PENDING_PROBLEM_LABELS: Record<NonNullable<PendingDispatch['problem']>, string> = {
+  'dependency-failed': 'A dependency failed',
+  'dependency-stopped': 'A dependency was stopped',
+  'dependency-deleted': 'A dependency was deleted',
+  'dispatch-failed': 'The dispatch could not start',
+  cancelled: 'The dispatch was cancelled',
+};
 
-function ThreadList({ threads }: { threads: readonly SecretaryDemandThreadView[] }) {
-  const { t } = useI18n();
-  return (
-    <section data-enso="secretary-threads" className="flex flex-col gap-1.5">
-      <p className="text-[12px] font-medium text-muted-foreground">{t('Demand threads')}</p>
-      {threads.map((thread) => (
-        <button
-          key={thread.id}
-          type="button"
-          data-enso="secretary-thread"
-          onClick={() => openSessionFromSecretary(thread.sessionId)}
-          className="flex flex-col items-start rounded-lg border border-border px-2.5 py-2 text-left"
-        >
-          <span className="text-[13px] font-medium">
-            {thread.summary || `${thread.channel} ${thread.messageId}`}
-          </span>
-          <span className="text-[11.5px] text-muted-foreground">
-            {thread.requesterIsOwner ? t('Thread owner') : t('Thread external')}
-            {thread.pr ? ` · #${thread.pr.number}` : ''}
-            {` · ${thread.status}`}
-          </span>
-          <span className="text-[11.5px] text-muted-foreground">
-            {t('Handled by {{session}}', { session: thread.sessionTitle })}
-          </span>
-        </button>
-      ))}
-    </section>
-  );
-}
-
-/** 需要你处理的会话：就地审批与提问，主按钮打开会话 */
-/** 等依赖的派发出问题：它没有会话可打开也不能停，只说明原因并可忽略；秘书已经收到同一条结果 */
+/** 等依赖的派发出问题：没有会话可打开，只说明原因并可忽略 */
 function PendingProblemCard({ pending }: { pending: PendingDispatch }) {
   const { t } = useI18n();
   const title = pending.draft.title?.trim() || pending.draft.prompt.split('\n')[0]?.trim() || '';
@@ -206,14 +127,7 @@ function PendingProblemCard({ pending }: { pending: PendingDispatch }) {
   );
 }
 
-const PENDING_PROBLEM_LABELS: Record<NonNullable<PendingDispatch['problem']>, string> = {
-  'dependency-failed': 'A dependency failed',
-  'dependency-stopped': 'A dependency was stopped',
-  'dependency-deleted': 'A dependency was deleted',
-  'dispatch-failed': 'The dispatch could not start',
-  cancelled: 'The dispatch was cancelled',
-};
-
+/** 等你拍板的会话卡：只留标题、一句话摘要/待决项与直接动作，细节交由 Peek 或会话承载 */
 function AttentionCard({ card }: { card: SecretarySessionCard }) {
   const { t, locale } = useI18n();
   const face = useSecretaryFace(card.conversationId);
@@ -241,6 +155,7 @@ function AttentionCard({ card }: { card: SecretarySessionCard }) {
     card.needsUser.length > 0
       ? card.needsUser
       : undefined;
+
   return (
     <div
       data-enso="secretary-card"
@@ -277,16 +192,20 @@ function AttentionCard({ card }: { card: SecretarySessionCard }) {
           {formatRelativeTime(feed.at, locale)}
         </span>
       </div>
-      <p className="mt-1 text-[13px] font-medium">{card.title}</p>
-      {decisionNeeds ? (
+      <div className="mt-1 flex items-start justify-between gap-2">
+        <p className="min-w-0 flex-1 text-[13px] font-medium leading-snug">{card.title}</p>
+        <button
+          type="button"
+          title={t('Open session')}
+          aria-label={t('Open session')}
+          onClick={() => openSessionPeek(card.conversationId)}
+          className={ACTION_CLASS}
+        >
+          <ArrowUpRight className="size-3.5" />
+        </button>
+      </div>
+      {decisionNeeds && (
         <div className="mt-1 flex flex-col gap-1 text-[12px]">
-          {card.projectName && (
-            <div>
-              <span className="inline-block rounded bg-muted px-1.5 text-[11px] text-muted-foreground">
-                {card.projectName}
-              </span>
-            </div>
-          )}
           {card.summary && (
             <p
               data-enso="secretary-card-needs-user-summary"
@@ -328,11 +247,6 @@ function AttentionCard({ card }: { card: SecretarySessionCard }) {
               );
             })}
           </ul>
-        </div>
-      ) : (
-        <div className="mt-0.5 flex items-center gap-1.5 text-[12px] text-muted-foreground">
-          <span className="shrink-0 rounded bg-muted px-1.5 text-[11px]">{card.projectName}</span>
-          {card.lastText && <span className="line-clamp-1">{card.lastText}</span>}
         </div>
       )}
       {(card.state === 'queued' || card.queueFailed) && (
@@ -404,6 +318,11 @@ function AttentionCard({ card }: { card: SecretarySessionCard }) {
             {t('Stop')}
           </button>
         )}
+        {card.projectName && (
+          <span className="ml-auto truncate text-[11px] text-subtle-foreground">
+            {card.projectName}
+          </span>
+        )}
       </div>
     </div>
   );
@@ -441,22 +360,25 @@ function TodoRow({ todo, secretaryId }: { todo: SecretaryBoardTodo; secretaryId?
       data-enso="secretary-todo"
       data-phase={phase}
       data-session={todo.conversationId}
-      draggable={phase !== 'todo'}
-      onDragStart={(event) => {
-        event.dataTransfer.setData('text/plain', todo.id);
-        event.dataTransfer.effectAllowed = 'move';
-      }}
-      className={cn(HOVER_ROW_CLASS, 'flex items-start gap-2.5 rounded-lg px-1.5 py-1.5')}
+      className={cn(HOVER_ROW_CLASS, 'flex items-start gap-2.5 rounded-lg px-2 py-1.5')}
     >
       <button
         type="button"
         data-enso="secretary-todo-done"
         aria-label={t('Mark done')}
         onClick={() => mutateTodo({ action: 'update', todoId: todo.id, done: true }, secretaryId)}
-        className="mt-[3px] size-3.5 shrink-0 rounded-full border-[1.5px] border-foreground/30 transition-colors hover:border-success hover:bg-success/20"
+        className={cn(
+          'mt-[3px] size-3.5 shrink-0 rounded-full border-[1.5px] transition-colors hover:border-success hover:bg-success/20',
+          phase === 'problem' ? 'border-destructive/60' : 'border-foreground/30'
+        )}
       />
       <div className="min-w-0 flex-1">
         <p className="text-[13px]">{todo.text}</p>
+        {phase === 'problem' && todo.problem && (
+          <p data-enso="secretary-todo-problem" className="mt-0.5 text-[11.5px] text-destructive">
+            {t(PROBLEM_LABEL[todo.problem])}
+          </p>
+        )}
         {phase !== 'todo' && (
           <button
             type="button"
@@ -470,18 +392,13 @@ function TodoRow({ todo, secretaryId }: { todo: SecretaryBoardTodo; secretaryId?
             onClick={() => {
               if (todo.conversationId) openSessionPeek(todo.conversationId);
             }}
-            className="mt-0.5 block max-w-full truncate text-left text-[12px] text-muted-foreground hover:text-foreground disabled:cursor-default"
+            className="mt-0.5 block max-w-full truncate text-left text-[11.5px] text-muted-foreground hover:text-foreground disabled:cursor-default"
           >
             {todo.sessionTitle || t('Open session')}
             {todo.sessionState || todo.pendingReminder
               ? ` · ${todoStateText(todo, conversations, t)}`
               : ''}
           </button>
-        )}
-        {phase === 'problem' && todo.problem && (
-          <p data-enso="secretary-todo-problem" className="mt-0.5 text-[11.5px] text-destructive">
-            {t(PROBLEM_LABEL[todo.problem])}
-          </p>
         )}
         {todo.dueAt !== undefined && (
           <p className="mt-0.5 text-[11.5px] text-subtle-foreground">
@@ -563,121 +480,6 @@ function TodoComposer({ onClose, secretaryId }: { onClose: () => void; secretary
   );
 }
 
-function AddTodoRow({ onAdd }: { onAdd: () => void }) {
-  const { t } = useI18n();
-  return (
-    <button
-      type="button"
-      onClick={onAdd}
-      className="flex items-center gap-2.5 rounded-lg px-1.5 py-1.5 text-[13px] text-subtle-foreground transition-colors hover:bg-foreground/5 hover:text-muted-foreground"
-    >
-      <Plus className="size-3.5 shrink-0" />
-      {t('Add a to-do')}
-    </button>
-  );
-}
-
-function FeedEntry({ event }: { event: FeedEvent }) {
-  const { t, locale } = useI18n();
-  const face = useSecretaryFace(event.conversationId);
-  const [stopping, setStopping] = useState(false);
-  const [expanded, setExpanded] = useState(false);
-  const conversationId = event.conversationId;
-  const open = conversationId ? () => openSessionFromSecretary(conversationId) : undefined;
-  const stop = conversationId
-    ? () => {
-        setStopping(true);
-        void window.electronAPI.agent
-          .abort(conversationId, { stopSubagents: true, cancelReminders: true })
-          .finally(() => setStopping(false));
-      }
-    : undefined;
-  const line = event.detail ? `${t(event.label)} · ${event.detail}` : t(event.label);
-  return (
-    <div
-      data-enso="secretary-feed-event"
-      data-id={event.id}
-      data-tone={event.tone}
-      className="group/row relative flex items-start gap-2 py-1 pl-4"
-    >
-      <span
-        aria-hidden
-        className={cn(
-          'absolute top-[9px] left-0 size-2 -translate-x-1/2 rounded-full border-[1.5px]',
-          TONE_DOT[event.tone]
-        )}
-      />
-      {face && (
-        <SecretaryFace
-          name={face.name}
-          color={face.color}
-          image={face.image}
-          enso="secretary-feed-avatar"
-          className="mt-0.5 size-4 shrink-0 rounded-[5px] text-[9px]"
-        />
-      )}
-      <button
-        type="button"
-        data-enso="secretary-feed-expand"
-        aria-expanded={expanded}
-        onClick={() => setExpanded((v) => !v)}
-        className="min-w-0 flex-1 text-left"
-      >
-        <span className="block text-[11px] text-subtle-foreground">
-          {feedTime(event.at, locale, Date.now())}
-          {event.projectName ? ` · ${event.projectName}` : ''}
-        </span>
-        <span className="mt-0.5 block truncate text-[13px]">{event.title}</span>
-        <span
-          title={line}
-          className={cn(
-            'mt-0.5 block text-[12px] text-muted-foreground',
-            expanded ? 'whitespace-pre-wrap break-words' : 'line-clamp-2'
-          )}
-        >
-          {line}
-        </span>
-      </button>
-      {event.running && stop && (
-        // 时间线行不着色，蒙版直接接面板底色。右侧让出跳转按钮的宽度并留出间距，
-        // 停止浮出时不会落在跳转按钮的位置上（原来两个按钮叠在一起，点跳转点到停止）。
-        <HoverActions className="from-background pr-7">
-          <button
-            type="button"
-            data-enso="secretary-feed-stop"
-            title={t('Stop')}
-            aria-label={t('Stop')}
-            disabled={stopping}
-            onClick={(clickEvent) => {
-              clickEvent.stopPropagation();
-              stop();
-            }}
-            className={cn(ACTION_CLASS, 'hover:bg-destructive/10 hover:text-destructive')}
-          >
-            <Square className="h-3.5 w-3.5" />
-          </button>
-        </HoverActions>
-      )}
-      {open && (
-        <button
-          type="button"
-          data-enso="secretary-feed-open"
-          title={t('Open session')}
-          aria-label={t('Open session')}
-          onClick={(clickEvent) => {
-            clickEvent.stopPropagation();
-            open();
-          }}
-          // 排在蒙版之后并定位：跳转始终画在蒙版之上，位置由行尾固定，谁也盖不住也挤不动
-          className={cn(ACTION_CLASS, 'relative')}
-        >
-          <ArrowUpRight className="h-3.5 w-3.5" />
-        </button>
-      )}
-    </div>
-  );
-}
-
 function EmptyState({ name, onAdd }: { name: string; onAdd: () => void }) {
   const { t } = useI18n();
   return (
@@ -704,7 +506,7 @@ function EmptyState({ name, onAdd }: { name: string; onAdd: () => void }) {
   );
 }
 
-/** 工作台：问候与今日战报、三个计数、需要你处理、进行中、需求线程、待办、动态时间线 */
+/** 极简工作台：只保留「等你处理 / 进行中 / 待办」三块，去掉流水账与给 Agent 看的内部信息 */
 export function SecretaryWorkbench({ name, secretaryId }: { name: string; secretaryId?: string }) {
   const { t } = useI18n();
   const ownBoard = useSecretaryStore((s) =>
@@ -712,14 +514,13 @@ export function SecretaryWorkbench({ name, secretaryId }: { name: string; secret
   );
   const upstreamHealth = useSessionsStore((s) => s.upstreamHealth) ?? [];
   const secretaries = useSecretaryStore((s) => s.secretaries);
-  /** 多个秘书时可以看总看板：全部，或筛到某一个 */
-  const [scope, setScope] = useState<'own' | 'all'>('own');
-  const [filterId, setFilterId] = useState<string>('all');
+  /** 多个秘书时保留一个极简范围下拉：默认当前秘书，可切到全部或指定秘书 */
+  const [filterId, setFilterId] = useState<string>('own');
   const [overviewBoards, setOverviewBoards] = useState<
     { secretaryId: string; name: string | null; board: SecretaryBoard }[] | null
   >(null);
   useEffect(() => {
-    if (scope !== 'all') return;
+    if (filterId === 'own') return;
     let alive = true;
     const load = () => {
       void window.electronAPI.secretary.overview().then((result) => {
@@ -732,9 +533,9 @@ export function SecretaryWorkbench({ name, secretaryId }: { name: string; secret
       alive = false;
       off();
     };
-  }, [scope]);
+  }, [filterId]);
   const board = useMemo(() => {
-    if (scope !== 'all' || !overviewBoards) return ownBoard;
+    if (filterId === 'own' || !overviewBoards) return ownBoard;
     const picked =
       filterId === 'all'
         ? overviewBoards
@@ -745,18 +546,12 @@ export function SecretaryWorkbench({ name, secretaryId }: { name: string; secret
       todos: picked.flatMap((entry) => entry.board.todos),
       done: picked.flatMap((entry) => entry.board.done),
     };
-  }, [scope, overviewBoards, filterId, ownBoard]);
+  }, [filterId, overviewBoards, ownBoard]);
+
   const focusProposal = useSecretaryStore((s) => s.focusProposal);
   const [adding, setAdding] = useState(false);
-  const needsYouRef = useRef<HTMLElement>(null);
-  const runningRef = useRef<HTMLElement>(null);
-  const todosRef = useRef<HTMLElement>(null);
-  /** 深链定位过来的那张卡：滚到它并闪一下，2 秒后恢复 */
+  /** 深链定位过来的那张卡：滚到它并闪一下，2.4 秒后恢复 */
   const [highlight, setHighlight] = useState<string | null>(null);
-  const digest = secretaryDigest(board, Date.now());
-  const feed = useSecretaryFeed(secretaryId);
-  const empty =
-    board.needsYou.length + board.running.length + board.todos.length + board.done.length === 0;
 
   useEffect(() => {
     if (!focusProposal) return;
@@ -773,6 +568,28 @@ export function SecretaryWorkbench({ name, secretaryId }: { name: string; secret
     return () => clearTimeout(timer);
   }, [focusProposal]);
 
+  // 已在「进行中」列表展示的派发待办不再重复铺在待办里；出问题和未派发（以及脱离进行中的 active）合并成单一待办列表
+  const runningIds = useMemo(
+    () =>
+      new Set(
+        board.running.flatMap((card) => (card.kind === 'session' ? [card.conversationId] : []))
+      ),
+    [board.running]
+  );
+  const visibleTodos = useMemo(() => {
+    const problem = board.todos.filter((todo) => todo.phase === 'problem');
+    const open = board.todos.filter((todo) => (todo.phase ?? 'todo') === 'todo');
+    const detachedActive = board.todos.filter(
+      (todo) =>
+        todo.phase === 'active' && (!todo.conversationId || !runningIds.has(todo.conversationId))
+    );
+    return [...problem, ...detachedActive, ...open];
+  }, [board.todos, runningIds]);
+
+  const empty =
+    board.needsYou.length + board.running.length + visibleTodos.length === 0 &&
+    upstreamHealth.length === 0;
+
   if (empty) {
     return adding ? (
       <div className="px-3 py-3">
@@ -783,33 +600,8 @@ export function SecretaryWorkbench({ name, secretaryId }: { name: string; secret
     );
   }
 
-  const { dispatched, completed, failed, earlier } = digest.today;
-  const todayLine =
-    dispatched === 0
-      ? earlier === 0
-        ? t('Nothing dispatched today')
-        : t('No new dispatches today; {{count}} earlier or taken over completed', {
-            count: earlier,
-          })
-      : t('Today {{dispatched}} dispatched, {{completed}} completed, {{failed}} failed', {
-          dispatched,
-          completed,
-          failed,
-        }) +
-        (earlier > 0
-          ? t('; plus {{count}} earlier or taken over completed', { count: earlier })
-          : '');
-  const active = board.todos.filter((todo) => todo.phase === 'active');
-  const problem = board.todos.filter((todo) => todo.phase === 'problem');
-  const open = board.todos.filter((todo) => (todo.phase ?? 'todo') === 'todo');
-  const reopenIds = new Set([...active, ...problem].map((todo) => todo.id));
-  // 等审批的会话因审批进「需要你」，它完成结果里的 needsUser 仍在秘书手里
-  const triage = [...board.needsYou, ...board.done].filter(
-    (card): card is SecretarySessionCard => card.kind === 'session' && card.triage === true
-  );
-
   return (
-    <div data-enso="secretary-workbench" className="flex flex-col gap-3 px-3 py-3">
+    <div data-enso="secretary-workbench" className="flex flex-col gap-4 px-3 py-3">
       {upstreamHealth.length > 0 && (
         <div
           data-enso="secretary-upstream-health"
@@ -832,68 +624,32 @@ export function SecretaryWorkbench({ name, secretaryId }: { name: string; secret
         </div>
       )}
       {secretaries.length > 1 && (
-        <div className="flex items-center gap-1.5">
-          {(['own', 'all'] as const).map((option) => (
-            <button
-              key={option}
-              type="button"
-              data-enso="secretary-board-scope-option"
-              data-scope={option}
-              aria-pressed={scope === option}
-              onClick={() => setScope(option)}
-              className={cn(
-                'rounded-md px-2 py-0.5 text-[12px] transition-colors',
-                scope === option
-                  ? 'bg-foreground/10 font-medium text-foreground'
-                  : 'text-muted-foreground hover:bg-foreground/5'
-              )}
-            >
-              {option === 'own' ? name : t('All secretaries')}
-            </button>
-          ))}
-          {scope === 'all' && (
-            <select
-              data-enso="secretary-board-filter"
-              value={filterId}
-              onChange={(event) => setFilterId(event.target.value)}
-              className="ml-auto rounded-md bg-transparent text-[12px] text-muted-foreground"
-            >
-              <option value="all">{t('All secretaries')}</option>
-              {secretaries.map((entry) => (
+        <div className="flex items-center justify-end">
+          <select
+            data-enso="secretary-board-filter"
+            aria-label={t('All secretaries')}
+            value={filterId}
+            onChange={(event) => setFilterId(event.target.value)}
+            className="rounded-md border border-border/70 bg-transparent px-2 py-0.5 text-[11.5px] text-muted-foreground outline-none hover:text-foreground"
+          >
+            <option value="own">{name}</option>
+            <option value="all">{t('All secretaries')}</option>
+            {secretaries
+              .filter((entry) => entry.id !== secretaryId)
+              .map((entry) => (
                 <option key={entry.id} value={entry.id}>
                   {entry.name ?? t('Secretary')}
                 </option>
               ))}
-            </select>
-          )}
+          </select>
         </div>
       )}
-      <div>
-        <p className="text-[15px] font-semibold">{t(digest.greeting)}</p>
-        <p className="mt-0.5 text-[12.5px] text-muted-foreground">{todayLine}</p>
-      </div>
-      <div data-enso="secretary-stats" className="grid grid-cols-3 gap-1.5">
-        <Stat
-          value={digest.counts.needsYou}
-          label={t('Waiting on you')}
-          warn={digest.counts.needsYou > 0}
-          target="needs-you"
-          section={needsYouRef}
-        />
-        <Stat
-          value={digest.counts.running}
-          label={t('In progress')}
-          target="running"
-          section={runningRef}
-        />
-        <Stat value={digest.counts.todos} label={t('To do')} target="todos" section={todosRef} />
-      </div>
       {board.needsYou.length > 0 && (
-        <section
-          ref={needsYouRef}
-          data-enso="secretary-needs-you"
-          className="flex scroll-mt-3 flex-col gap-1.5"
-        >
+        <section data-enso="secretary-needs-you" className="flex flex-col gap-2">
+          <h3 className="px-1 text-[12px] font-medium text-warning">
+            {t('Waiting on you')}
+            <span className="ml-1 tabular-nums">{board.needsYou.length}</span>
+          </h3>
           {board.needsYou.map((card) =>
             card.kind === 'proposal' ? (
               <div
@@ -915,170 +671,40 @@ export function SecretaryWorkbench({ name, secretaryId }: { name: string; secret
           )}
         </section>
       )}
-      {triage.length > 0 && <TriageSection cards={triage} />}
       {board.running.length > 0 && (
-        <section
-          ref={runningRef}
-          data-enso="secretary-workbench-running"
-          className="flex scroll-mt-3 flex-col"
-        >
-          <h3 className="px-1.5 pb-1 text-[12px] text-subtle-foreground">
+        <section data-enso="secretary-workbench-running" className="flex flex-col gap-0.5">
+          <h3 className="px-1 pb-0.5 text-[12px] text-subtle-foreground">
             {t('In progress')}
             <span className="ml-1 tabular-nums">{board.running.length}</span>
           </h3>
           <RunningCards running={board.running} />
         </section>
       )}
-      {board.threads && board.threads.length > 0 && <ThreadList threads={board.threads} />}
-      {active.length > 0 && (
-        <TodoGroup title={t('In progress')} count={active.length} marker="secretary-active">
-          {active.map((todo) => (
-            <TodoRow key={todo.id} todo={todo} secretaryId={secretaryId} />
-          ))}
-        </TodoGroup>
-      )}
-      {problem.length > 0 && (
-        <TodoGroup title={t('Problem')} count={problem.length} marker="secretary-problem">
-          {problem.map((todo) => (
-            <TodoRow key={todo.id} todo={todo} secretaryId={secretaryId} />
-          ))}
-        </TodoGroup>
-      )}
-      <section
-        ref={todosRef}
-        data-enso="secretary-todos"
-        className="flex scroll-mt-3 flex-col"
-        onDragOver={(event) => {
-          if ([...event.dataTransfer.types].includes('text/plain')) event.preventDefault();
-        }}
-        onDrop={(event) => {
-          event.preventDefault();
-          const todoId = event.dataTransfer.getData('text/plain');
-          if (reopenIds.has(todoId)) mutateTodo({ action: 'reopen', todoId }, secretaryId);
-        }}
-      >
-        <h3 className="px-1.5 pb-1 text-[12px] text-subtle-foreground">
-          {t('To do')}
-          {open.length > 0 && <span className="ml-1 tabular-nums">{open.length}</span>}
-        </h3>
-        {open.map((todo) => (
+      <section data-enso="secretary-todos" className="flex flex-col gap-0.5">
+        <div className="flex items-center justify-between px-1 pb-0.5">
+          <h3 className="text-[12px] text-subtle-foreground">
+            {t('To do')}
+            {visibleTodos.length > 0 && (
+              <span className="ml-1 tabular-nums">{visibleTodos.length}</span>
+            )}
+          </h3>
+          {!adding && (
+            <button
+              type="button"
+              data-enso="secretary-todo-add"
+              onClick={() => setAdding(true)}
+              className="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[11.5px] text-subtle-foreground transition-colors hover:bg-muted hover:text-foreground"
+            >
+              <Plus className="size-3" />
+              {t('Add a to-do')}
+            </button>
+          )}
+        </div>
+        {adding && <TodoComposer onClose={() => setAdding(false)} secretaryId={secretaryId} />}
+        {visibleTodos.map((todo) => (
           <TodoRow key={todo.id} todo={todo} secretaryId={secretaryId} />
         ))}
-        {adding ? (
-          <TodoComposer onClose={() => setAdding(false)} secretaryId={secretaryId} />
-        ) : (
-          <AddTodoRow onAdd={() => setAdding(true)} />
-        )}
-      </section>
-      <section data-enso="secretary-feed" className="flex flex-col">
-        <h3 className="px-1.5 pb-1 text-[12px] text-subtle-foreground">{t('Recent activity')}</h3>
-        {feed.freshCount > 0 && (
-          <button
-            type="button"
-            data-enso="secretary-feed-fresh"
-            data-count={feed.freshCount}
-            onClick={feed.reveal}
-            className="sticky top-0 z-10 mx-1.5 h-7 -mb-7 rounded-md bg-muted px-2 text-[12px] text-foreground"
-          >
-            {t('{{count}} new updates', { count: feed.freshCount })}
-          </button>
-        )}
-        <div className="ml-1.5 flex flex-col border-l border-border">
-          {feed.events.map((event) => (
-            <FeedEntry key={event.id} event={event} />
-          ))}
-          <div ref={feed.sentinelRef} data-enso="secretary-feed-sentinel" className="h-px" />
-        </div>
-        {feed.loading && (
-          <p
-            data-enso="secretary-feed-loading"
-            className="px-1.5 py-1 text-[12px] text-subtle-foreground"
-          >
-            {t('Loading…')}
-          </p>
-        )}
-        {feed.exhausted && !feed.loading && feed.events.length > 0 && (
-          <p
-            data-enso="secretary-feed-end"
-            className="px-1.5 py-1 text-[12px] text-subtle-foreground"
-          >
-            {t('No earlier activity')}
-          </p>
-        )}
       </section>
     </div>
-  );
-}
-
-function TodoGroup({
-  title,
-  count,
-  marker,
-  children,
-}: {
-  title: string;
-  count: number;
-  marker: string;
-  children: ReactNode;
-}) {
-  return (
-    <section data-enso={marker} className="flex flex-col">
-      <h3 className="px-1.5 pb-1 text-[12px] text-subtle-foreground">
-        {title}
-        <span className="ml-1 tabular-nums">{count}</span>
-      </h3>
-      {children}
-    </section>
-  );
-}
-
-/** needsUser 还在等秘书筛选的完成卡：默认收起，不计入「需要你」 */
-function TriageSection({ cards }: { cards: readonly SecretarySessionCard[] }) {
-  const { t } = useI18n();
-  const [open, setOpen] = useState(false);
-  return (
-    <section data-enso="secretary-triage" className="flex flex-col">
-      <button
-        type="button"
-        data-enso="secretary-triage-toggle"
-        aria-expanded={open}
-        onClick={() => setOpen((value) => !value)}
-        className="flex items-center gap-1 px-1.5 pb-1 text-left text-[12px] text-subtle-foreground hover:text-foreground"
-      >
-        <ChevronRight className={cn('size-3 transition-transform', open && 'rotate-90')} />
-        {t('With secretary')}
-        <span className="tabular-nums">· {cards.length}</span>
-      </button>
-      {open &&
-        cards.map((card) => (
-          <button
-            key={card.conversationId}
-            type="button"
-            data-enso="secretary-triage-card"
-            onClick={() => openSessionPeek(card.conversationId, { title: card.title })}
-            className={cn(
-              HOVER_ROW_CLASS,
-              'flex flex-col gap-0.5 rounded-lg px-1.5 py-1 text-left'
-            )}
-          >
-            <span className="flex min-w-0 items-center gap-1.5 text-[12.5px]">
-              <span className="min-w-0 flex-1 truncate">{card.title}</span>
-              <span className="shrink-0 rounded bg-muted px-1.5 text-[11px] text-muted-foreground">
-                {card.projectName}
-              </span>
-            </span>
-            {(card.needsUser ?? []).map((item) => (
-              <span
-                key={item}
-                data-enso="secretary-triage-item"
-                title={item}
-                className="line-clamp-1 break-words text-[12px] text-muted-foreground"
-              >
-                {item}
-              </span>
-            ))}
-          </button>
-        ))}
-    </section>
   );
 }

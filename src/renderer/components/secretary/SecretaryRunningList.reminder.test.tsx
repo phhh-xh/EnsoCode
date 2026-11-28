@@ -108,7 +108,6 @@ describe('SecretaryRunningList 等提醒状态展示', () => {
     expect(badge?.textContent).toContain('Waiting for reminder · 14:23');
     expect(badge?.getAttribute('title')).toContain(fullLabel);
     expect(badge?.getAttribute('title')).toContain('3m');
-    expect(container.textContent).toContain(fullLabel);
     expect(container.textContent).not.toContain('Continuing');
     expect(container.textContent).not.toContain('Running');
     expect(container.innerHTML).not.toContain('animate-spin');

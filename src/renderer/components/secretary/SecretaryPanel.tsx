@@ -1,33 +1,50 @@
 import type { SecretaryScheduleView } from '@shared/types/secretary';
-import { Settings } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  ArrowLeft,
+  CalendarClock,
+  ChevronRight,
+  History,
+  LayoutGrid,
+  MessageSquare,
+  MoreHorizontal,
+  Settings,
+  Sparkles,
+  Wrench,
+} from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { SettingsSection } from '@/components/settings/kit';
+import { Menu, MenuItem, MenuPopup, MenuTrigger } from '@/components/ui/menu';
 import { useI18n } from '@/i18n';
 import { openSecretarySettings } from '@/lib/secretarySettingsLink';
-import { cn } from '@/lib/utils';
 import { secretaryIdOfProject, useSecretaryStore } from '@/stores/secretary';
 import { SecretaryAvatar } from './SecretaryAvatar';
 import { SecretaryContactPanel } from './SecretaryContactPanel';
 import { SecretaryDailyBoard } from './SecretaryDailyBoard';
 import { SecretaryMemoryPanel } from './SecretaryMemoryPanel';
-import { SecretaryRunningList } from './SecretaryRunningList';
 import { SecretarySchedulePanel } from './SecretarySchedulePanel';
 import { SecretarySkillsPanel } from './SecretarySkillsPanel';
 import { SecretaryWorkbench } from './SecretaryWorkbench';
+import { secretaryDigest } from './secretaryDigest';
 import { SecretarySummary, secretarySectionView } from './secretaryView';
 
 type Tab = 'workbench' | 'daily' | 'memory' | 'schedules' | 'contact' | 'skills';
 
-const TABS: { key: Tab; label: string }[] = [
-  { key: 'workbench', label: 'Workbench' },
-  { key: 'daily', label: 'Daily board' },
-  { key: 'memory', label: 'Memory' },
-  { key: 'schedules', label: 'Schedules' },
-  { key: 'contact', label: 'Contacts' },
-  { key: 'skills', label: 'Skills' },
+const SECONDARY_VIEWS: {
+  key: Exclude<Tab, 'workbench'>;
+  label: string;
+  icon: typeof LayoutGrid;
+}[] = [
+  { key: 'daily', label: 'Daily board', icon: LayoutGrid },
+  { key: 'schedules', label: 'Schedules', icon: CalendarClock },
+  { key: 'memory', label: 'Memory', icon: Sparkles },
+  { key: 'contact', label: 'Contacts', icon: MessageSquare },
+  { key: 'skills', label: 'Skills', icon: Wrench },
 ];
 
-/** 秘书面板：身份行 + 工作台 / 记忆 / 定时三个标签，替代原来的两块独立面板 */
+const HEADER_BTN_CLASS =
+  'flex size-6 shrink-0 items-center justify-center rounded-[6px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground';
+
+/** 秘书面板：极简顶栏（状态 + 更多菜单 + 设置）+ 工作台首屏 + 底部今日交付入口 */
 export function SecretaryPanel({ projectId }: { projectId?: string } = {}) {
   const { t } = useI18n();
   // 面板属于打开它的那个秘书会话，不跟着侧栏当前聚焦的秘书走
@@ -42,7 +59,6 @@ export function SecretaryPanel({ projectId }: { projectId?: string } = {}) {
   const focusProposal = useSecretaryStore((state) => state.focusProposal);
   const reload = useSecretaryStore((state) => state.reload);
   const [tab, setTab] = useState<Tab>('workbench');
-  const [runningOpen, setRunningOpen] = useState(false);
   const [schedules, setSchedules] = useState<SecretaryScheduleView[]>([]);
   const loadSchedules = useCallback(() => {
     void window.electronAPI.secretary.listSchedules(secretaryId).then((result) => {
@@ -59,21 +75,19 @@ export function SecretaryPanel({ projectId }: { projectId?: string } = {}) {
     if (focusProposal) setTab('workbench');
   }, [focusProposal]);
 
+  const completedToday = useMemo(() => {
+    const { completed, earlier } = secretaryDigest(secretary.board, Date.now()).today;
+    return completed + earlier;
+  }, [secretary.board]);
+
   const view = secretarySectionView(secretary, t);
   if (!view) return <SecretaryPanelPending onReload={() => void reload(secretaryId)} />;
 
-  const badge: Record<Tab, number> = {
-    workbench: view.needsYou,
-    daily: 0,
-    memory: 0,
-    schedules: schedules.length,
-    contact: 0,
-    skills: 0,
-  };
+  const activeSecondary = SECONDARY_VIEWS.find((entry) => entry.key === tab);
 
   return (
     <div data-enso="secretary-panel" className="flex h-full min-h-0 flex-col">
-      <div className="flex items-center gap-2.5 px-3 pt-3">
+      <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-2.5">
         <SecretaryAvatar
           name={view.name}
           color={view.color}
@@ -83,67 +97,75 @@ export function SecretaryPanel({ projectId }: { projectId?: string } = {}) {
           size="sm"
         />
         <div className="min-w-0 flex-1">
-          <p className="truncate text-[13.5px] font-semibold">{view.name}</p>
+          <p className="truncate text-[13.5px] font-semibold leading-tight">{view.name}</p>
           <p
             data-enso="secretary-summary"
-            className="flex min-w-0 items-center truncate text-[11.5px] text-muted-foreground"
+            className="mt-0.5 flex min-w-0 items-center truncate text-[11.5px] text-muted-foreground"
           >
-            <SecretarySummary
-              view={view}
-              runningExpanded={runningOpen}
-              onToggleRunning={() => setRunningOpen((value) => !value)}
-            />
+            <SecretarySummary view={view} />
           </p>
         </div>
+        <Menu>
+          <MenuTrigger
+            data-enso="secretary-panel-more"
+            title={t('More actions')}
+            aria-label={t('More actions')}
+            className={HEADER_BTN_CLASS}
+          >
+            <MoreHorizontal className="size-4" />
+          </MenuTrigger>
+          <MenuPopup align="end" sideOffset={4} className="min-w-40">
+            {SECONDARY_VIEWS.map(({ key, label, icon: Icon }) => (
+              <MenuItem
+                key={key}
+                data-enso="secretary-panel-tab"
+                data-tab={key}
+                data-active={tab === key || undefined}
+                onClick={() => setTab(key)}
+                className="text-[12.5px]"
+              >
+                <Icon className="size-3.5 text-muted-foreground" />
+                <span className="flex-1">{t(label)}</span>
+                {key === 'schedules' && schedules.length > 0 && (
+                  <span className="text-[11px] tabular-nums text-subtle-foreground">
+                    {schedules.length}
+                  </span>
+                )}
+              </MenuItem>
+            ))}
+          </MenuPopup>
+        </Menu>
         <button
           type="button"
           data-enso="secretary-panel-settings"
           onClick={() => openSecretarySettings(secretaryId)}
           title={t('Secretary settings')}
           aria-label={t('Secretary settings')}
-          className="flex size-6 shrink-0 items-center justify-center rounded-[6px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          className={HEADER_BTN_CLASS}
         >
           <Settings className="size-4" />
         </button>
       </div>
-      <div className="mt-2 flex shrink-0 gap-0.5 border-b border-border px-1.5">
-        {TABS.map(({ key, label }) => (
+      {activeSecondary && (
+        <div className="flex shrink-0 items-center justify-between border-b border-border/60 px-3 py-1.5">
           <button
-            key={key}
             type="button"
-            data-enso="secretary-panel-tab"
-            data-tab={key}
-            data-active={tab === key || undefined}
-            onClick={() => setTab(key)}
-            className={cn(
-              'relative px-2 pt-1 pb-1.5 text-[12.5px] transition-colors',
-              tab === key
-                ? 'font-medium text-foreground'
-                : 'text-subtle-foreground hover:text-foreground'
-            )}
+            data-enso="secretary-panel-back"
+            onClick={() => setTab('workbench')}
+            className="inline-flex items-center gap-1 rounded px-1 py-0.5 text-[12px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           >
-            {t(label)}
-            {badge[key] > 0 && (
-              <span
-                className={cn(
-                  'ml-1 text-[11px] tabular-nums',
-                  key === 'workbench' ? 'text-warning' : 'text-subtle-foreground'
-                )}
-              >
-                {badge[key]}
-              </span>
-            )}
-            {tab === key && (
-              <span className="absolute inset-x-1.5 -bottom-px h-0.5 rounded-full bg-foreground" />
-            )}
+            <ArrowLeft className="size-3.5" />
+            {t('Back to workbench')}
           </button>
-        ))}
-      </div>
+          <span className="text-[12px] font-medium text-foreground">
+            {t(activeSecondary.label)}
+          </span>
+        </div>
+      )}
       <div
         data-enso="secretary-panel-scroll"
         className="relative flex min-h-0 flex-1 flex-col overflow-y-auto"
       >
-        {runningOpen && <SecretaryRunningList secretaryId={secretaryId} />}
         {tab === 'workbench' && <SecretaryWorkbench name={view.name} secretaryId={secretaryId} />}
         {tab === 'daily' && <SecretaryDailyBoard secretaryId={secretaryId} />}
         {tab === 'memory' && <SecretaryMemoryPanel secretaryId={secretaryId} />}
@@ -178,6 +200,27 @@ export function SecretaryPanel({ projectId }: { projectId?: string } = {}) {
           />
         )}
       </div>
+      {tab === 'workbench' && (
+        <button
+          type="button"
+          data-enso="secretary-panel-daily-link"
+          onClick={() => setTab('daily')}
+          className="flex shrink-0 items-center justify-between border-t border-border px-3 py-2 text-[12px] text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+        >
+          <span className="inline-flex items-center gap-1.5">
+            <History className="size-3.5 shrink-0" />
+            <span>
+              {completedToday > 0
+                ? t('{{count}} completed today', { count: completedToday })
+                : t('Daily board')}
+            </span>
+          </span>
+          <span className="inline-flex items-center gap-0.5 text-[11.5px] text-subtle-foreground">
+            {t('View')}
+            <ChevronRight className="size-3.5" />
+          </span>
+        </button>
+      )}
     </div>
   );
 }

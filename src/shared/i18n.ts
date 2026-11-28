@@ -4288,6 +4288,8 @@ export const zhTranslations: Record<string, string> = {
   'From a to-do': '来自待办',
   'One-off': '一次性',
   Workbench: '工作台',
+  'Back to workbench': '返回工作台',
+  '{{count}} completed today': '今日已交付 {{count}} 项',
   // 秘书看板（日报）：按天回看
   'Daily board': '看板',
   'Previous day': '前一天',

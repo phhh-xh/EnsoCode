@@ -3,54 +3,48 @@ import { type ContactBadge, sessionBadge } from '@shared/secretary/commands';
 import type { PendingDispatch, SecretaryCard } from '@shared/types/secretary';
 import { formatRetryClock } from '@shared/upstreamRecovery';
 import { ArrowUpRight, Check, Clock, RotateCcw } from 'lucide-react';
-import { useState } from 'react';
 import { HOVER_ROW_CLASS, HoverActions } from '@/components/ui/hover-actions';
 import { useI18n } from '@/i18n';
-import { modelLabel } from '@/lib/modelLabel';
-import { formatRelativeTime } from '@/lib/time';
 import { cn } from '@/lib/utils';
 import { useSecretaryStore } from '@/stores/secretary';
 import { openSessionPeek } from '@/stores/sessionPeek';
-import { useSettingsStore } from '@/stores/settings';
-import { DependencyNote } from './SecretaryDependencyLinks';
 
 type SessionCard = Extract<SecretaryCard, { kind: 'session' }>;
 
-const BADGE_CLASS = 'shrink-0 rounded px-1 py-px text-[10px]';
-
 /**
- * 状态徽标。等后台任务和续跑都是「空闲但还没收口」，靠 backgroundRunning 区分；
- * 需要你、出错按 countsAsRunning 的口径不进这张表，这里只是把状态列全。
+ * 精简状态样式：只保留人一眼能看懂的短状态与指示点色。
+ * 分支、模型、子代理细节与最后正文下沉到 SessionPeekDialog，不再铺在主列表上。
  */
-const BADGE_STYLE: Record<ContactBadge, { label: string; className: string }> = {
-  failed: { label: 'Failed', className: 'bg-destructive/15 text-destructive' },
-  waiting: { label: 'Waiting for you', className: 'bg-warning/15 text-warning' },
-  running: { label: 'Running', className: 'bg-success/15 text-success' },
-  background: { label: 'Waiting on a background task', className: 'bg-warning/15 text-warning' },
+const BADGE_STYLE: Record<ContactBadge, { label: string; dot: string; text: string }> = {
+  failed: { label: 'Failed', dot: 'bg-destructive', text: 'text-destructive' },
+  waiting: { label: 'Waiting for you', dot: 'bg-warning', text: 'text-warning' },
+  running: { label: 'Running', dot: 'bg-success', text: 'text-muted-foreground' },
+  background: {
+    label: 'Waiting on a background task',
+    dot: 'bg-warning',
+    text: 'text-muted-foreground',
+  },
   reminder: {
     label: 'Waiting for reminder',
-    className: 'bg-sky-500/15 text-sky-600 dark:text-sky-400',
+    dot: 'bg-sky-500',
+    text: 'text-sky-600 dark:text-sky-400',
   },
-  persistent: { label: 'Service running', className: 'bg-warning/15 text-warning' },
-  subagent: { label: 'Waiting on subagent', className: 'bg-warning/15 text-warning' },
-  continuing: { label: 'Continuing', className: 'bg-success/15 text-success' },
-  interrupted: { label: 'Interrupted', className: 'bg-warning/15 text-warning' },
-  stalled: { label: 'Stalled, no activity', className: 'bg-destructive/15 text-destructive' },
-  idle: { label: 'Idle', className: 'bg-muted text-muted-foreground' },
+  persistent: { label: 'Service running', dot: 'bg-warning', text: 'text-muted-foreground' },
+  subagent: { label: 'Waiting on subagent', dot: 'bg-success', text: 'text-muted-foreground' },
+  continuing: { label: 'Continuing', dot: 'bg-success', text: 'text-muted-foreground' },
+  interrupted: { label: 'Interrupted', dot: 'bg-warning', text: 'text-warning' },
+  stalled: { label: 'Stalled, no activity', dot: 'bg-destructive', text: 'text-destructive' },
+  idle: { label: 'Idle', dot: 'bg-subtle-foreground', text: 'text-muted-foreground' },
 };
 
-function badgeOf(card: SessionCard): { label: string; className: string } {
+function badgeOf(card: SessionCard): { label: string; dot: string; text: string } {
   return BADGE_STYLE[sessionBadge({ ...card, stalled: card.stalled !== undefined })];
 }
 
-/** 一行进行中的会话：点主体展开更多进度，右侧图标才打开会话 */
+/** 极简进行中行：状态圆点 + 标题 + 项目·短状态；整行点击打开 SessionPeek 查看详情 */
 function RunningRow({ card }: { card: SessionCard }) {
-  const { t, locale } = useI18n();
-  const providers = useSettingsStore((state) => state.providers) ?? [];
-  const virtualModels = useSettingsStore((state) => state.virtualModels);
-  const [expanded, setExpanded] = useState(false);
+  const { t } = useI18n();
   const badge = badgeOf(card);
-  const model = modelLabel(providers, card.model, virtualModels);
   const upstreamRetry = card.upstreamRetry;
   const upstreamLabel = upstreamRetry
     ? upstreamRetry.kind === 'quota'
@@ -68,26 +62,46 @@ function RunningRow({ card }: { card: SessionCard }) {
           : t('Queued')
       : null;
   const reminder = !upstreamLabel && !queuedLabel ? card.pendingReminder : undefined;
-  const reminderNow = Date.now();
   const reminderLabel = reminder
     ? t('Waiting for reminder · {{time}}', { time: formatReminderClock(reminder.dueAt) })
     : null;
-  const reminderTooltip = reminder ? formatReminderTooltip(reminder, reminderNow, t) : undefined;
+  const reminderTooltip = reminder ? formatReminderTooltip(reminder, Date.now(), t) : undefined;
+
+  const dotClass = upstreamLabel
+    ? 'bg-amber-500'
+    : queuedLabel
+      ? 'bg-orange-500'
+      : reminderLabel
+        ? 'bg-sky-500'
+        : badge.dot;
+
+  const statusTextClass = upstreamLabel
+    ? 'text-amber-600 dark:text-amber-400'
+    : queuedLabel
+      ? 'text-orange-600'
+      : reminderLabel
+        ? 'inline-flex items-center gap-1 text-sky-600 tabular-nums dark:text-sky-400'
+        : badge.text;
+
   return (
     <div
       data-enso="secretary-running-row"
       data-conversation={card.conversationId}
-      data-open={expanded ? 'true' : 'false'}
-      className={cn(HOVER_ROW_CLASS, 'flex items-start gap-2 rounded-lg px-1.5 py-1.5')}
+      className={cn(HOVER_ROW_CLASS, 'flex items-center gap-2 rounded-lg px-2 py-1.5')}
     >
+      <span aria-hidden className={cn('size-2 shrink-0 rounded-full', dotClass)} />
       <button
         type="button"
-        data-enso="secretary-running-expand"
-        aria-expanded={expanded}
-        onClick={() => setExpanded((value) => !value)}
+        data-enso="secretary-running-open"
+        onClick={() => openSessionPeek(card.conversationId)}
         className="min-w-0 flex-1 text-left"
       >
-        <span className="flex min-w-0 items-center gap-1.5">
+        <span className="block truncate text-[13px] text-foreground">
+          {card.title || t('Unnamed')}
+        </span>
+        <span className="mt-0.5 flex min-w-0 items-center gap-1 text-[11.5px] text-muted-foreground">
+          {card.projectName && <span className="shrink-0 truncate">{card.projectName}</span>}
+          {card.projectName && <span aria-hidden>·</span>}
           <span
             data-enso={
               upstreamLabel
@@ -99,99 +113,24 @@ function RunningRow({ card }: { card: SessionCard }) {
                     : 'secretary-running-badge'
             }
             title={reminderTooltip}
-            className={cn(
-              BADGE_CLASS,
-              upstreamLabel
-                ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400'
-                : queuedLabel
-                  ? 'bg-orange-500/15 text-orange-600'
-                  : reminderLabel
-                    ? 'inline-flex items-center gap-1 bg-sky-500/15 text-sky-600 tabular-nums dark:text-sky-400'
-                    : badge.className
-            )}
+            className={cn('min-w-0 truncate', statusTextClass)}
           >
-            {reminderLabel && <Clock className="h-2.5 w-2.5 shrink-0" aria-hidden />}
+            {reminderLabel && (
+              <Clock className="inline size-2.5 shrink-0 align-[-1px]" aria-hidden />
+            )}
             {upstreamLabel ?? queuedLabel ?? reminderLabel ?? t(badge.label)}
           </span>
           {card.takeover && (
-            <span
-              data-enso="secretary-running-takeover"
-              className={cn(BADGE_CLASS, 'bg-primary/10 text-primary')}
-            >
-              {t('Taken over')}
-            </span>
+            <>
+              <span aria-hidden>·</span>
+              <span data-enso="secretary-running-takeover" className="shrink-0 text-primary">
+                {t('Taken over')}
+              </span>
+            </>
           )}
-          <span className="min-w-0 flex-1 truncate text-[13px]">{card.title || t('Unnamed')}</span>
         </span>
-        <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11.5px] text-muted-foreground">
-          <span className="shrink-0 rounded bg-muted px-1.5 text-[11px]">{card.projectName}</span>
-          <span className="shrink-0 tabular-nums">
-            {formatRelativeTime(card.stateSince, locale)}
-          </span>
-        </span>
-        {(card.branch || card.baseRef) && (
-          <span
-            data-enso="secretary-running-base"
-            className="mt-0.5 block truncate text-[11.5px] text-subtle-foreground"
-          >
-            {card.branch ?? ''}
-            {card.baseRef ? ` · ${t('from {{ref}}', { ref: card.baseRef })}` : ''}
-          </span>
-        )}
-        {model && (
-          <span
-            data-enso="secretary-running-model"
-            className="mt-0.5 block truncate text-[11.5px] text-subtle-foreground"
-          >
-            {t('Model: {{model}}', { model })}
-          </span>
-        )}
-        {card.subagents && card.subagents.length > 0 && (
-          <span
-            data-enso="secretary-running-subagents"
-            className="mt-0.5 block space-y-0.5 text-[11.5px] text-muted-foreground"
-          >
-            {card.subagents.map((run) => {
-              const minutes = Math.floor(run.elapsedMs / 60_000);
-              const label = run.title || run.agentId.slice(0, 8);
-              return (
-                <span key={run.runId} className="block truncate">
-                  {minutes >= 1
-                    ? t('Waiting on subagent {{title}} ({{minutes}}m)', { title: label, minutes })
-                    : t('Waiting on subagent {{title}} (<1m)', { title: label })}
-                  {run.activity ? ` · ${run.activity}` : ''}
-                </span>
-              );
-            })}
-          </span>
-        )}
-        {reminder?.label && (
-          <span
-            data-enso="secretary-running-reminder"
-            title={reminderTooltip}
-            className="mt-0.5 block truncate text-[11.5px] text-muted-foreground"
-          >
-            {reminder.label}
-          </span>
-        )}
-        {card.lastText && (
-          <span
-            className={cn(
-              'mt-0.5 block text-[12px] text-muted-foreground',
-              expanded ? 'whitespace-pre-wrap break-words' : 'truncate'
-            )}
-          >
-            {card.lastText}
-          </span>
-        )}
-        {expanded && (
-          <span className="mt-1 block text-[11.5px] text-subtle-foreground">
-            {t('Started {{time}}', { time: formatRelativeTime(card.startedAt, locale) })}
-          </span>
-        )}
       </button>
-      {/* 行内收口：只有派发或接管跟踪的会话才会出现在这张表里 */}
-      <HoverActions className="pr-7">
+      <HoverActions>
         {upstreamRetry && (
           <button
             type="button"
@@ -220,56 +159,43 @@ function RunningRow({ card }: { card: SessionCard }) {
         >
           <Check className="h-3.5 w-3.5" />
         </button>
+        <button
+          type="button"
+          title={t('Open session')}
+          aria-label={t('Open session')}
+          onClick={(event) => {
+            event.stopPropagation();
+            openSessionPeek(card.conversationId);
+          }}
+          className="flex size-5 shrink-0 items-center justify-center rounded-[5px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+        >
+          <ArrowUpRight className="h-3.5 w-3.5" />
+        </button>
       </HoverActions>
-      <button
-        type="button"
-        data-enso="secretary-running-open"
-        title={t('Open session')}
-        aria-label={t('Open session')}
-        onClick={(event) => {
-          event.stopPropagation();
-          openSessionPeek(card.conversationId);
-        }}
-        className="relative flex size-5 shrink-0 items-center justify-center rounded-[5px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-      >
-        <ArrowUpRight className="h-3.5 w-3.5" />
-      </button>
     </div>
   );
 }
 
-/** 等依赖的派发：还没有会话，只报在等谁 */
-function PendingRow({ pending }: { pending: PendingDispatch }) {
-  const { t, locale } = useI18n();
+/** 等依赖的派发：极简一行，只报标题 + 项目·等待依赖 */
+function PendingRow({ pending, projectName }: { pending: PendingDispatch; projectName: string }) {
+  const { t } = useI18n();
   const title = pending.draft.title?.trim() || pending.draft.prompt.split('\n')[0]?.trim() || '';
   return (
     <div
       data-enso="secretary-running-pending"
       data-pending={pending.id}
-      className="flex items-start gap-2 rounded-lg px-1.5 py-1.5"
+      className="flex items-center gap-2 rounded-lg px-2 py-1.5"
     >
+      <span aria-hidden className="size-2 shrink-0 rounded-full bg-warning" />
       <div className="min-w-0 flex-1">
-        <span className="flex min-w-0 items-center gap-1.5">
-          <span
-            data-enso="secretary-running-badge"
-            className={cn(BADGE_CLASS, 'bg-warning/15 text-warning')}
-          >
+        <span className="block truncate text-[13px]">{title || t('Unnamed')}</span>
+        <span className="mt-0.5 flex min-w-0 items-center gap-1 text-[11.5px] text-muted-foreground">
+          <span className="shrink-0 truncate">{projectName || pending.projectId}</span>
+          <span aria-hidden>·</span>
+          <span data-enso="secretary-running-badge" className="truncate text-warning">
             {t('Waiting for dependencies')}
           </span>
-          <span className="min-w-0 flex-1 truncate text-[13px]">{title || t('Unnamed')}</span>
         </span>
-        <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11.5px] text-muted-foreground">
-          <span className="shrink-0 rounded bg-muted px-1.5 text-[11px]">{pending.projectId}</span>
-          <span className="shrink-0 tabular-nums">
-            {formatRelativeTime(pending.updatedAt, locale)}
-          </span>
-        </span>
-        <DependencyNote
-          template="After {{ids}}"
-          ids={pending.after}
-          dataEnso="secretary-running-after"
-          className="mt-0.5 block text-[11.5px] text-subtle-foreground"
-        />
       </div>
     </div>
   );
@@ -281,12 +207,12 @@ export function RunningCards({ running }: { running: readonly SecretaryCard[] })
     card.kind === 'session' ? (
       <RunningRow key={card.conversationId} card={card} />
     ) : card.kind === 'pending' ? (
-      <PendingRow key={card.pending.id} pending={card.pending} />
+      <PendingRow key={card.pending.id} pending={card.pending} projectName={card.projectName} />
     ) : null
   );
 }
 
-/** 「进行中 N」展开后的明细：和摘要里的数字共用 board.running，条数天然一致 */
+/** 进行中列表组件（保留独立导出供调用与测试） */
 export function SecretaryRunningList({ secretaryId }: { secretaryId?: string } = {}) {
   const { t } = useI18n();
   const running = useSecretaryStore(

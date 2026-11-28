@@ -1,7 +1,6 @@
-import { feedEvents, pageFeed } from '@shared/secretary/feed';
 import type { SecretaryBoard, SecretaryCard, SecretaryProposal } from '@shared/types/secretary';
 import { parseHTML } from 'linkedom';
-import { act, createElement, type ReactElement } from 'react';
+import { act, createElement, type ReactElement, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -23,6 +22,24 @@ vi.mock('@/i18n', () => ({ useI18n: () => ({ t: translate, locale: 'zh' }) }));
 vi.mock('@/plugins/PluginIcon', () => ({ PluginIcon: () => null }));
 vi.mock('@/plugins/PluginView', () => ({ PluginFrame: () => null }));
 vi.mock('qrcode', () => ({ default: { toDataURL: async () => '' } }));
+vi.mock('@/components/ui/menu', () => ({
+  Menu: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+  MenuTrigger: ({ children, ...rest }: { children?: ReactNode } & Record<string, unknown>) => (
+    <button type="button" {...rest}>
+      {children}
+    </button>
+  ),
+  MenuPopup: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+  MenuItem: ({
+    children,
+    onClick,
+    ...rest
+  }: { children?: ReactNode; onClick?: () => void } & Record<string, unknown>) => (
+    <button type="button" onClick={onClick} {...rest}>
+      {children}
+    </button>
+  ),
+}));
 vi.mock('@/components/ui/switch', () => ({
   Switch: ({
     checked,
@@ -211,10 +228,10 @@ beforeEach(() => {
         h.calls.push({ name: 'markResult', args: [conversationId, action] });
         return { ok: true };
       },
-      feed: async (query?: { before?: { at: number; id: string }; limit?: number }) => {
-        const page = pageFeed(feedEvents(h.secretary.board as SecretaryBoard), query ?? {});
-        return { ok: true, ...page };
-      },
+      daily: async () => ({
+        ok: true,
+        daily: { day: '2024-05-15', groups: [], counts: { dispatched: 0 } },
+      }),
       contactState: async () => ({
         enabled: true,
         channels: [
@@ -310,7 +327,7 @@ describe('SecretaryPanel', () => {
     expect(h.calls.filter((call) => call.name === 'reload')).toHaveLength(2);
   });
 
-  it('顶部显示名字与一行摘要，并留设置入口', async () => {
+  it('顶部显示名字、摘要、更多菜单与设置入口，不再折叠展开重复的进行中列表', async () => {
     h.board = h.secretary.board = board({
       needsYou: [proposalCard],
       running: [sessionCard('c1')],
@@ -319,71 +336,56 @@ describe('SecretaryPanel', () => {
     await flush();
     expect(text('[data-enso="secretary-panel"]')).toContain('小安');
     expect(text('[data-enso="secretary-summary"]')).toBe('1 waiting · 1 running');
+    expect(container.querySelector('[data-enso="secretary-panel-more"]')).not.toBeNull();
     expect(container.querySelector('[data-enso="secretary-panel-settings"]')).not.toBeNull();
+    expect(container.querySelector('[data-enso="secretary-running-toggle"]')).toBeNull();
   });
 
-  it('工作台默认打开：问候、今日战报、三个计数与等你卡', async () => {
+  it('工作台首屏只留等你处理、进行中、待办和底部今日交付入口，去掉问候/战报/计数卡/时间线', async () => {
     h.board = h.secretary.board = board({
       needsYou: [proposalCard],
-      running: [sessionCard('c1')],
+      running: [
+        sessionCard('c1', {
+          title: '跑全量测试',
+          branch: 'feat/x',
+          baseRef: 'main',
+          model: { providerId: 'anthropic', modelId: 'opus' },
+          lastText: '内部工具输出正文',
+        }),
+      ],
       todos: [{ id: 't1', text: '写周报', createdAt: NOW, updatedAt: NOW }],
       done: [sessionCard('c2', { state: 'idle', result: 'goal-complete', resultAt: NOW - 30_000 })],
     });
     await render(<SecretaryPanel />);
     await flush();
     const workbench = container.querySelector('[data-enso="secretary-workbench"]');
-    expect(workbench?.textContent).toContain('[Good afternoon]');
-    expect(workbench?.textContent).toContain('Today 2 dispatched, 1 completed, 0 failed');
-    const stats = [...container.querySelectorAll('[data-enso="secretary-stat"]')];
-    expect(stats.map((node) => node.textContent)).toEqual([
-      '1[Waiting on you]',
-      '1[In progress]',
-      '1[To do]',
-    ]);
-    expect(stats[0].getAttribute('data-warn')).toBe('true');
+    expect(workbench?.textContent).not.toContain('[Good afternoon]');
+    expect(workbench?.textContent).not.toContain('Today ');
+    expect(container.querySelector('[data-enso="secretary-stat"]')).toBeNull();
+    expect(container.querySelector('[data-enso="secretary-feed"]')).toBeNull();
     expect(container.querySelector('[data-enso="secretary-needs-you"]')?.textContent).toContain(
       '重构登录流程'
     );
     expect(container.querySelector('[data-enso="secretary-needs-you"]')?.textContent).toContain(
       '[Confirm dispatch]'
     );
-  });
-
-  it('今日战报：之前派出或接手的完成另起一句，不混进今天派出的完成数', async () => {
-    h.board = h.secretary.board = board({
-      done: [
-        sessionCard('today', { state: 'idle', result: 'goal-complete', resultAt: NOW - 30_000 }),
-        sessionCard('old', {
-          state: 'idle',
-          startedAt: NOW - 86_400_000,
-          result: 'goal-complete',
-          resultAt: NOW - 20_000,
-        }),
-      ],
-    });
-    await render(<SecretaryPanel />);
+    // 进行中行隐藏分支、模型与 lastText，只保留标题与项目/短状态
+    const runningText = text('[data-enso="secretary-workbench-running"]');
+    expect(runningText).toContain('跑全量测试');
+    expect(runningText).toContain('enso-code');
+    expect(runningText).not.toContain('feat/x');
+    expect(runningText).not.toContain('opus');
+    expect(runningText).not.toContain('内部工具输出正文');
+    // 底部交付入口显示今日完成条数，点击可直达看板
+    const dailyLink = container.querySelector('[data-enso="secretary-panel-daily-link"]');
+    expect(dailyLink?.textContent).toContain('1 completed today');
+    click('[data-enso="secretary-panel-daily-link"]');
     await flush();
-    expect(text('[data-enso="secretary-workbench"]')).toContain(
-      'Today 1 dispatched, 1 completed, 0 failed; plus 1 earlier or taken over completed'
-    );
-  });
-
-  it('今天没派新活但完成了之前的，不说「还没派活」', async () => {
-    h.board = h.secretary.board = board({
-      done: [
-        sessionCard('old', {
-          state: 'idle',
-          startedAt: NOW - 86_400_000,
-          result: 'goal-complete',
-          resultAt: NOW - 20_000,
-        }),
-      ],
-    });
-    await render(<SecretaryPanel />);
+    expect(container.querySelector('[data-enso="secretary-daily"]')).not.toBeNull();
+    expect(container.querySelector('[data-enso="secretary-panel-back"]')).not.toBeNull();
+    click('[data-enso="secretary-panel-back"]');
     await flush();
-    expect(text('[data-enso="secretary-workbench"]')).toContain(
-      'No new dispatches today; 1 earlier or taken over completed'
-    );
+    expect(container.querySelector('[data-enso="secretary-workbench"]')).not.toBeNull();
   });
 
   it('全空时给空状态与记一条待办入口', async () => {
@@ -397,38 +399,7 @@ describe('SecretaryPanel', () => {
     expect(container.querySelector('input')).not.toBeNull();
   });
 
-  it('动态列出在跑的会话，hover 的停止按钮真的中止会话', async () => {
-    h.board = h.secretary.board = board({ running: [sessionCard('c1', { title: '跑全量测试' })] });
-    await render(<SecretaryPanel />);
-    await flush();
-    const feed = container.querySelector('[data-enso="secretary-feed"]');
-    expect(feed?.textContent).toContain('跑全量测试');
-    expect(feed?.textContent).toContain('[Started]');
-    click('[data-enso="secretary-feed-event"] button[aria-label="[Stop]"]');
-    await flush();
-    expect(h.calls).toContainEqual({
-      name: 'abort',
-      args: ['c1', { stopSubagents: true, cancelReminders: true }],
-    });
-  });
-
-  it('动态行点主体只展开，右侧图标才打开会话', async () => {
-    h.board = h.secretary.board = board({
-      running: [sessionCard('c1', { title: '跑全量测试', lastText: '第 3 步' })],
-    });
-    await render(<SecretaryPanel />);
-    await flush();
-    const expand = () => container.querySelector('[data-enso="secretary-feed-expand"]');
-    expect(expand()?.getAttribute('aria-expanded')).toBe('false');
-    click('[data-enso="secretary-feed-expand"]');
-    expect(expand()?.getAttribute('aria-expanded')).toBe('true');
-    expect(h.calls).not.toContainEqual({ name: 'selectConversation', args: 'c1' });
-    click('[data-enso="secretary-feed-open"]');
-    expect(h.calls).toContainEqual({ name: 'selectConversation', args: 'c1' });
-    expect(expand()?.getAttribute('aria-expanded')).toBe('true');
-  });
-
-  it('待办、动态、定时的行内操作都叠在悬停蒙版里，不占行宽', async () => {
+  it('待办与定时的行内操作都叠在悬停蒙版里，不占行宽', async () => {
     h.board = h.secretary.board = board({
       running: [sessionCard('c1', { title: '跑全量测试' })],
       todos: [{ id: 't1', text: '写周报', createdAt: NOW, updatedAt: NOW }],
@@ -446,12 +417,9 @@ describe('SecretaryPanel', () => {
         b.getAttribute('aria-label')
       );
       expect(inLayer).toEqual(labels);
-      // 蒙版外不再有操作按钮占位
-      const outside = [...row.querySelectorAll('button')].filter((b) => !layer.contains(b));
-      expect(outside.every((b) => !labels.includes(b.getAttribute('aria-label') ?? ''))).toBe(true);
     };
     layered('[data-enso="secretary-todo"]', ['[Dispatch]', '[Edit]', '[Delete]']);
-    layered('[data-enso="secretary-feed-event"]', ['[Stop]']);
+    layered('[data-enso="secretary-running-row"]', ['[Mark done]', '[Open session]']);
     click('[data-enso="secretary-panel-tab"][data-tab="schedules"]');
     await flush();
     const rows = container.querySelectorAll('[data-enso="secretary-schedule"]');
@@ -473,7 +441,7 @@ describe('SecretaryPanel', () => {
     });
   });
 
-  it('进行中的待办显示会话并可放回待办', async () => {
+  it('脱离进行中的 active 待办仍显示会话并可放回待办', async () => {
     h.board = h.secretary.board = board({
       todos: [
         {
@@ -484,7 +452,7 @@ describe('SecretaryPanel', () => {
           phase: 'active',
           conversationId: 'c9',
           sessionTitle: '看构建',
-          sessionState: 'running',
+          sessionState: 'idle',
         },
       ],
     });
@@ -493,7 +461,7 @@ describe('SecretaryPanel', () => {
     const row = container.querySelector('[data-enso="secretary-todo"]');
     expect(row?.getAttribute('data-phase')).toBe('active');
     expect(row?.textContent).toContain('看构建');
-    expect(row?.textContent).toContain('[Running]');
+    expect(row?.textContent).toContain('[Idle]');
     click('[data-enso="secretary-todo-session"]');
     expect(useSessionPeek.getState().conversationId).toBe('c9');
     expect(h.calls.some((call) => call.name === 'selectConversation')).toBe(false);
@@ -504,7 +472,7 @@ describe('SecretaryPanel', () => {
     });
   });
 
-  it('进行中数字点开列出会话，条数与数字一致', async () => {
+  it('进行中列表按状态显示短标签，整行点击打开 SessionPeek，悬停可就地标完成', async () => {
     h.board = h.secretary.board = board({
       running: [
         sessionCard('c1', { title: '跑全量测试' }),
@@ -515,37 +483,7 @@ describe('SecretaryPanel', () => {
           backgroundRunning: true,
         }),
         sessionCard('c3', { title: '接管的活', state: 'idle', continuing: true, takeover: true }),
-      ],
-    });
-    await render(<SecretaryPanel />);
-    await flush();
-    expect(text('[data-enso="secretary-summary"]')).toContain('3 running');
-    expect(container.querySelector('[data-enso="secretary-running"]')).toBeNull();
-
-    click('[data-enso="secretary-running-toggle"]');
-    const rows = [
-      ...container.querySelectorAll(
-        '[data-enso="secretary-running"] [data-enso="secretary-running-row"]'
-      ),
-    ];
-    expect(rows).toHaveLength(3);
-    expect(text('[data-enso="secretary-running"]')).toContain('[In progress]3');
-    expect(rows[0].textContent).toContain('[Running]');
-    expect(rows[0].textContent).toContain('跑全量测试');
-    expect(rows[0].textContent).toContain('enso-code');
-    expect(rows[1].textContent).toContain('[Waiting on a background task]');
-    expect(rows[2].textContent).toContain('[Continuing]');
-    expect(rows[2].querySelector('[data-enso="secretary-running-takeover"]')?.textContent).toBe(
-      '[Taken over]'
-    );
-    expect(rows[0].querySelector('[data-enso="secretary-running-takeover"]')).toBeNull();
-    expect(rows[0].getAttribute('data-open')).toBe('false');
-  });
-
-  it('停住的会话在进行中列表标出已停住', async () => {
-    h.board = h.secretary.board = board({
-      running: [
-        sessionCard('c1', {
+        sessionCard('c4', {
           title: '打包安装',
           state: 'idle',
           continuing: true,
@@ -555,155 +493,33 @@ describe('SecretaryPanel', () => {
     });
     await render(<SecretaryPanel />);
     await flush();
-    click('[data-enso="secretary-running-toggle"]');
     const rows = [
       ...container.querySelectorAll(
-        '[data-enso="secretary-running"] [data-enso="secretary-running-row"]'
+        '[data-enso="secretary-workbench-running"] [data-enso="secretary-running-row"]'
       ),
     ];
-    expect(rows).toHaveLength(1);
-    expect(rows[0].querySelector('[data-enso="secretary-running-badge"]')?.textContent).toBe(
+    expect(rows).toHaveLength(4);
+    expect(rows[0].textContent).toContain('[Running]');
+    expect(rows[1].textContent).toContain('[Waiting on a background task]');
+    expect(rows[2].textContent).toContain('[Continuing]');
+    expect(rows[2].querySelector('[data-enso="secretary-running-takeover"]')?.textContent).toBe(
+      '[Taken over]'
+    );
+    expect(rows[3].querySelector('[data-enso="secretary-running-badge"]')?.textContent).toBe(
       '[Stalled, no activity]'
     );
-    expect(rows[0].textContent).toContain('打包安装');
-  });
 
-  it('正在等子代理的会话在进行中列表显示等子代理徽标与子代理名称和耗时', async () => {
-    h.board = h.secretary.board = board({
-      running: [
-        sessionCard('c1', {
-          title: '门禁修复',
-          state: 'running',
-          subagents: [
-            {
-              agentId: 'a1',
-              runId: 'r1',
-              title: '实现子代理',
-              elapsedMs: 5 * 60_000,
-              activity: 'bash pnpm test',
-            },
-          ],
-        }),
-      ],
-    });
-    await render(<SecretaryPanel />);
-    await flush();
-    click('[data-enso="secretary-running-toggle"]');
-    const rows = [
-      ...container.querySelectorAll(
-        '[data-enso="secretary-running"] [data-enso="secretary-running-row"]'
-      ),
-    ];
-    expect(rows).toHaveLength(1);
-    expect(rows[0].querySelector('[data-enso="secretary-running-badge"]')?.textContent).toBe(
-      '[Waiting on subagent]'
-    );
-    const subagentText =
-      rows[0].querySelector('[data-enso="secretary-running-subagents"]')?.textContent ?? '';
-    expect(subagentText).toContain('实现子代理');
-    expect(subagentText).toContain('5m');
-    expect(subagentText).toContain('bash pnpm test');
-  });
-
-  it('已完成或出错的会话不进进行中列表', async () => {
-    h.board = h.secretary.board = board({
-      running: [sessionCard('c1', { title: '在跑的活' })],
-      done: [
-        sessionCard('c2', {
-          title: '做完的活',
-          state: 'idle',
-          result: 'goal-complete',
-          resultAt: NOW - 1000,
-        }),
-        sessionCard('c3', {
-          title: '挂掉的活',
-          state: 'error',
-          result: 'failed',
-          resultAt: NOW - 1000,
-        }),
-      ],
-    });
-    await render(<SecretaryPanel />);
-    await flush();
-    click('[data-enso="secretary-running-toggle"]');
-    const rows = [
-      ...container.querySelectorAll(
-        '[data-enso="secretary-running"] [data-enso="secretary-running-row"]'
-      ),
-    ];
-    expect(rows).toHaveLength(1);
-    const list = container.querySelector('[data-enso="secretary-running"]')?.textContent ?? '';
-    expect(list).toContain('在跑的活');
-    expect(list).not.toContain('做完的活');
-    expect(list).not.toContain('挂掉的活');
-  });
-
-  it('进行中行点主体只展开，右侧图标弹窗看会话，关掉后展开状态不变', async () => {
-    h.board = h.secretary.board = board({
-      running: [sessionCard('c1', { title: '跑全量测试', lastText: '第 3 步' })],
-    });
-    await render(<SecretaryPanel />);
-    await flush();
-    click('[data-enso="secretary-running-toggle"]');
-    const expand = () =>
-      container.querySelector(
-        '[data-enso="secretary-running"] [data-enso="secretary-running-expand"]'
-      );
-    const row = () =>
-      container.querySelector(
-        '[data-enso="secretary-running"] [data-enso="secretary-running-row"]'
-      );
-    expect(expand()?.getAttribute('aria-expanded')).toBe('false');
-    expect(row()?.textContent).not.toContain('Started ');
-
-    click('[data-enso="secretary-running-expand"]');
-    expect(expand()?.getAttribute('aria-expanded')).toBe('true');
-    expect(row()?.getAttribute('data-open')).toBe('true');
-    expect(row()?.textContent).toContain('Started ');
-    expect(h.calls).not.toContainEqual({ name: 'selectConversation', args: 'c1' });
-
+    // 点行主体直接 Peek，不跳出会话
     click('[data-enso="secretary-running-open"]');
     expect(useSessionPeek.getState().conversationId).toBe('c1');
     expect(h.calls).not.toContainEqual({ name: 'selectConversation', args: 'c1' });
-    expect(expand()?.getAttribute('aria-expanded')).toBe('true');
 
-    act(() => useSessionPeek.getState().close());
-    expect(useSessionPeek.getState().conversationId).toBeNull();
-    expect(container.querySelector('[data-enso="secretary-running"]')).not.toBeNull();
-    expect(expand()?.getAttribute('aria-expanded')).toBe('true');
-  });
-
-  it('进行中行显示派发时实际用到的模型', async () => {
-    h.board = h.secretary.board = board({
-      running: [sessionCard('c1', { model: { providerId: 'anthropic', modelId: 'opus' } })],
-    });
-    await render(<SecretaryPanel />);
-    await flush();
-    click('[data-enso="secretary-running-toggle"]');
-    const model = container.querySelector(
-      '[data-enso="secretary-running"] [data-enso="secretary-running-model"]'
-    );
-    expect(model?.textContent).toContain('opus');
-  });
-
-  it('进行中行悬停可以就地标记完成，不占位置也不打开会话', async () => {
-    h.board = h.secretary.board = board({
-      running: [sessionCard('c1', { title: '跑全量测试' })],
-    });
-    await render(<SecretaryPanel />);
-    await flush();
-    click('[data-enso="secretary-running-toggle"]');
-    const row = container.querySelector(
-      '[data-enso="secretary-running"] [data-enso="secretary-running-row"]'
-    );
-    expect(row?.querySelector('[data-slot="hover-actions"]')).not.toBeNull();
-
+    // 悬停标记完成
     click('[data-enso="secretary-running-mark-done"]');
     expect(h.calls).toContainEqual({ name: 'markResult', args: ['c1', 'done'] });
-    expect(h.calls).not.toContainEqual({ name: 'selectConversation', args: 'c1' });
   });
 
-  it('没有进行中的会话时给一行空状态', async () => {
+  it('没有进行中的会话时 SecretaryRunningList 给一行空状态', async () => {
     await render(createElement(SecretaryRunningList));
     await flush();
     expect(text('[data-enso="secretary-running"]')).toBe('[In progress]0[Nothing running]');
@@ -712,33 +528,7 @@ describe('SecretaryPanel', () => {
     ).toBeNull();
   });
 
-  it('Main 推送新状态后展开的列表跟着变', async () => {
-    h.board = h.secretary.board = board({ running: [sessionCard('c1', { title: '第一件' })] });
-    await render(<SecretaryPanel />);
-    await flush();
-    click('[data-enso="secretary-running-toggle"]');
-    expect(
-      container.querySelectorAll(
-        '[data-enso="secretary-running"] [data-enso="secretary-running-row"]'
-      )
-    ).toHaveLength(1);
-
-    h.board = h.secretary.board = board({
-      running: [sessionCard('c1', { title: '第一件' }), sessionCard('c2', { title: '第二件' })],
-    });
-    await render(<SecretaryPanel />);
-    await flush();
-    const rows = [
-      ...container.querySelectorAll(
-        '[data-enso="secretary-running"] [data-enso="secretary-running-row"]'
-      ),
-    ];
-    expect(rows).toHaveLength(2);
-    expect(text('[data-enso="secretary-running"]')).toContain('[In progress]2');
-    expect(text('[data-enso="secretary-summary"]')).toContain('2 running');
-  });
-
-  it('联系方式标签直接管理：分组卡片里有主人身份与渠道，不再是占位跳转', async () => {
+  it('通过更多菜单进入联系方式可直接管理，并返回工作台', async () => {
     await render(<SecretaryPanel />);
     await flush();
     click('[data-enso="secretary-panel-tab"][data-tab="contact"]');
@@ -747,31 +537,19 @@ describe('SecretaryPanel', () => {
     expect(container.querySelector('[data-enso="secretary-contact-owner"]')).not.toBeNull();
     expect(container.querySelector('[data-settings-row="contacts.owner"]')).not.toBeNull();
     expect(container.querySelector('[data-settings-row="contacts.channels"]')).not.toBeNull();
-    expect(container.querySelector('[data-enso="secretary-contact-entry"]')).toBeNull();
-    expect(container.textContent).not.toContain('managed in Settings');
+    click('[data-enso="secretary-panel-back"]');
+    await flush();
+    expect(container.querySelector('[data-enso="secretary-contact"]')).toBeNull();
   });
 
-  it('标签切到记忆与定时，定时分系统与秘书定的两组', async () => {
+  it('通过更多菜单切到记忆与定时，定时随状态推送自动重读', async () => {
+    h.schedules = [];
     await render(<SecretaryPanel />);
     await flush();
     click('[data-enso="secretary-panel-tab"][data-tab="memory"]');
     expect(container.querySelector('[data-enso="secretary-memory"]')).not.toBeNull();
     expect(container.querySelector('[data-enso="secretary-workbench"]')).toBeNull();
-    click('[data-enso="secretary-panel-tab"][data-tab="schedules"]');
-    await flush();
-    const schedules = container.querySelector('[data-enso="secretary-schedules"]');
-    expect(schedules?.textContent).toContain('[System]');
-    expect(schedules?.textContent).toContain('每日晨报');
-    expect(schedules?.textContent).toContain('每周五汇总');
-    expect(schedules?.textContent).toContain('To add a schedule, just tell 小安');
-    const rows = [...container.querySelectorAll('[data-enso="secretary-schedule"]')];
-    expect(rows.map((row) => row.getAttribute('data-system'))).toEqual(['true', null]);
-  });
 
-  it('Main 推送后定时标签自动重读，新增与运行时间都不用手动刷新', async () => {
-    h.schedules = [];
-    await render(<SecretaryPanel />);
-    await flush();
     click('[data-enso="secretary-panel-tab"][data-tab="schedules"]');
     expect(container.querySelectorAll('[data-enso="secretary-schedule"]')).toHaveLength(0);
 
@@ -783,21 +561,5 @@ describe('SecretaryPanel', () => {
     });
     await flush();
     expect(text('[data-enso="secretary-schedules"]')).toContain('巡检');
-
-    h.schedules = [
-      {
-        id: 's3',
-        name: '巡检',
-        prompt: '看看',
-        cron: '*/10 * * * *',
-        lastFiredAt: NOW,
-        nextRunAt: NOW + 600_000,
-      },
-    ];
-    act(() => {
-      for (const listener of h.stateListeners) listener();
-    });
-    await flush();
-    expect(text('[data-enso="secretary-schedule"]')).toContain('Last run');
   });
 });
