@@ -84,12 +84,16 @@ import {
 } from './linkModel';
 import {
   createSnapshotTracker,
+  DESK_READS_CACHE,
   loadReads,
+  loadSharedReads,
   loadSnapshot,
   mountSnapshot,
   offlineSnapshotNote,
+  pruneSharedReads,
   pruneSnapshots,
   saveReads,
+  saveSharedReads,
   saveSnapshot,
 } from './snapshot';
 import { type DeskAsset, type DeskFrame, DeskTunnel } from './tunnel';
@@ -524,7 +528,24 @@ async function main(): Promise<void> {
           settingsLoaded = false;
           optimisticHydrated = false;
           await coverWithSnapshot();
-          if (iframes.main === iframe) iframe?.contentWindow?.location.reload();
+          if (iframes[kind] !== iframe) return;
+          // 销毁旧 iframe 重建新元素：iOS WKWebView 后台恢复后
+          // `contentWindow.location.reload()` 可能静默失效，导致新页面永不 attach。
+          iframe?.remove();
+          delete iframes[kind];
+          const fresh = mount(kind);
+          // 兜底：若 8s 后仍未收到新 iframe attach（如本地代理刚重建完首包超时），再重建一次
+          if (kind === 'main') {
+            const currentFrame = attached.main;
+            setTimeout(() => {
+              if (iframes.main === fresh && attached.main === currentFrame && !leaving) {
+                tunnel.note('reset-retry');
+                fresh.remove();
+                delete iframes.main;
+                mount('main');
+              }
+            }, 8_000);
+          }
         })();
       });
       attached[kind] = frame;
@@ -875,9 +896,10 @@ async function main(): Promise<void> {
     const sig = readsSignature(reads);
     if (sig !== savedReadsSig) {
       savedReadsSig = sig;
-      void saveReads(`${DESK_CACHE_PREFIX}${version}`, base, reads).catch(() => {
+      void saveSharedReads(device.pairId, reads).catch(() => {
         savedReadsSig = '';
       });
+      void saveReads(`${DESK_CACHE_PREFIX}${version}`, base, reads).catch(() => {});
     }
     const doc = iframes.main?.contentDocument;
     if (snapshot || !settingsLoaded || !doc) return;
@@ -925,13 +947,24 @@ async function main(): Promise<void> {
 
   clearTimeout(bootWatchdog);
   const cached = loadDeskMeta(localStorage, device.pairId);
-  if (cached) {
-    const saved = await withTimeout(
-      loadReads(`${DESK_CACHE_PREFIX}${cached.version}`, deskBase(device.pairId, cached.version)),
-      STORAGE_TIMEOUT_MS,
-      new Map<string, { h: string; json: string }>()
-    );
-    for (const [key, entry] of saved) reads.set(key, entry);
+  const sharedReads = await withTimeout(
+    loadSharedReads(device.pairId),
+    STORAGE_TIMEOUT_MS,
+    new Map<string, { h: string; json: string }>()
+  );
+  const initialReads =
+    sharedReads.size > 0 || !cached
+      ? sharedReads
+      : await withTimeout(
+          loadReads(
+            `${DESK_CACHE_PREFIX}${cached.version}`,
+            deskBase(device.pairId, cached.version)
+          ),
+          STORAGE_TIMEOUT_MS,
+          new Map<string, { h: string; json: string }>()
+        );
+  if (initialReads.size > 0) {
+    for (const [key, entry] of initialReads) reads.set(key, entry);
     savedReadsSig = readsSignature(reads);
     syncNativeDeskWidget(true);
   }
@@ -972,6 +1005,7 @@ async function main(): Promise<void> {
     `${DESK_CACHE_PREFIX}${current.version}`,
     devices.map((d) => d.pairId)
   );
+  void pruneSharedReads(devices.map((d) => d.pairId));
   if (cacheStorage) {
     void pruneRemoteImages(
       cacheStorage,
@@ -980,7 +1014,12 @@ async function main(): Promise<void> {
   }
 
   // 上一次启动的构建保留到下次：升级时 SW 从中复用内容未变的带指纹文件
-  const keep = new Set([current.version, cached?.version].map((v) => `${DESK_CACHE_PREFIX}${v}`));
+  const keep = new Set([
+    DESK_READS_CACHE,
+    ...[current.version, cached?.version]
+      .filter((v): v is string => Boolean(v))
+      .map((v) => `${DESK_CACHE_PREFIX}${v}`),
+  ]);
   if (cacheStorage) {
     void cacheStorage
       .keys()

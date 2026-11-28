@@ -173,8 +173,10 @@ interface QuicEndpoint {
 
 /** 同一中继的 /healthz QUIC 探测结果缓存（5 分钟内复用） */
 const QUIC_PROBE_TTL_MS = 5 * 60_000;
-/** Happy Eyeballs：UDP QUIC 在此时间内未完成建连则自动切回 WSS，防运营商封 UDP */
-const QUIC_HAPPY_EYEBALLS_MS = 250;
+/** Happy Eyeballs：100ms RTT 蜂窝/跨境网络下 QUIC 握手+开三流约 300~600ms，留足窗口防误回落 WSS */
+export const QUIC_HAPPY_EYEBALLS_MS = 1_500;
+/** UDP 被封连续超时后的短冷却：期间直接走 WSS，避免每次重连都白等 1.5s */
+const QUIC_FAILURE_COOLDOWN_MS = 60_000;
 const QUIC_BULK_BYTES = 16 * 1024;
 
 interface RelayHealthInfo {
@@ -184,6 +186,7 @@ interface RelayHealthInfo {
 }
 
 const endpointCache = new Map<string, RelayHealthInfo>();
+const quicCooldownUntil = new Map<string, number>();
 let quicConnSeq = 0;
 
 export function getNativeBridge(): EnsoNativeBridge | null {
@@ -487,6 +490,11 @@ class HappyEyeballsRelaySocket implements RelaySocketLike {
   }
 
   private async start(): Promise<void> {
+    const cooledUntil = quicCooldownUntil.get(this.params.relayUrl) ?? 0;
+    if (Date.now() < cooledUntil) {
+      this.fallbackToWs();
+      return;
+    }
     const endpoint = await probeQuicEndpoint(this.params.relayUrl);
     if (this.active !== 'pending') return;
     if (!endpoint || !this.native.openQuic) {
@@ -499,6 +507,7 @@ class HappyEyeballsRelaySocket implements RelaySocketLike {
       onOpen: () => {
         if (this.active !== 'pending' || this.quicId !== id) return;
         this.clearFallbackTimer();
+        quicCooldownUntil.delete(this.params.relayUrl);
         this.active = 'quic';
         this.transportKind = 'quic';
         this.emitOpen();
@@ -527,9 +536,10 @@ class HappyEyeballsRelaySocket implements RelaySocketLike {
       onClose: (code, reason) => {
         quicRegistry.delete(id);
         if (this.active === 'pending') {
-          // 建连阶段 QUIC 失败 → 立即回落 WSS，并使探测缓存短时失效以免卡住
+          // 建连阶段 QUIC 失败 → 立即回落 WSS，并短时冷却避免反复空等
           this.clearFallbackTimer();
           this.quicId = null;
+          quicCooldownUntil.set(this.params.relayUrl, Date.now() + QUIC_FAILURE_COOLDOWN_MS);
           this.fallbackToWs();
           return;
         }
@@ -547,6 +557,7 @@ class HappyEyeballsRelaySocket implements RelaySocketLike {
         quicRegistry.delete(staleId);
         this.native.closeQuic?.(staleId, 1000, 'happy-eyeballs-fallback');
       }
+      quicCooldownUntil.set(this.params.relayUrl, Date.now() + QUIC_FAILURE_COOLDOWN_MS);
       this.fallbackToWs();
     }, QUIC_HAPPY_EYEBALLS_MS);
 

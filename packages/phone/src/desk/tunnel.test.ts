@@ -571,4 +571,85 @@ describe('DeskTunnel', () => {
       vi.stubGlobal('document', origDocument);
     }
   });
+
+  it('无 seq 的 rpc-result（宿主拒绝或旧宿主响应）必须立即兑现，不被 ordered() 吞掉', async () => {
+    const { frame, cid } = createOnlineTunnel();
+    const p1 = frame.invoke(
+      'agent:parent-history-tail',
+      JSON.stringify([{ conversationId: 'c1' }])
+    );
+    const req1 = mockState.sent.find(
+      (m): m is Extract<PhoneToHost, { type: 'rpc-invoke' }> => m.type === 'rpc-invoke'
+    );
+    expect(req1).toBeDefined();
+
+    // 宿主拒绝时返回不带 seq 的 rpc-result
+    mockState.events?.onRemoteFrame?.({
+      type: 'rpc-result',
+      cid,
+      id: req1!.id,
+      ok: false,
+      error: 'remote-session-lost',
+    });
+    await expect(p1).rejects.toThrow('remote-session-lost');
+
+    // 旧宿主无 seq 的成功响应同样立即兑现
+    mockState.sent = [];
+    const p2 = frame.invoke('settings:read', '[]');
+    const req2 = mockState.sent.find(
+      (m): m is Extract<PhoneToHost, { type: 'rpc-invoke' }> => m.type === 'rpc-invoke'
+    );
+    mockState.events?.onRemoteFrame?.({
+      type: 'rpc-result',
+      cid,
+      id: req2!.id,
+      ok: true,
+      data: { ok: true },
+    });
+    await expect(p2).resolves.toBe(JSON.stringify({ ok: true }));
+  });
+
+  it('挂死 pending 在 rehello-watch 打印最老 channel 并在超限后超时收口，避免每 60s 无限空转', async () => {
+    const origWindow = globalThis.window;
+    const origDocument = globalThis.document;
+    vi.stubGlobal('window', { addEventListener: () => {} });
+    vi.stubGlobal('document', { visibilityState: 'visible', addEventListener: () => {} });
+    try {
+      const { tunnel, frame } = createOnlineTunnel();
+      tunnel.start();
+      const stuck = frame.invoke(
+        'agent:parent-history-tail',
+        JSON.stringify([{ conversationId: 'c1' }])
+      );
+      let rejected: Error | null = null;
+      stuck.catch((err: Error) => {
+        rejected = err;
+      });
+
+      // 推进 3 轮 rehello-watch（每轮最多 60s）
+      await vi.advanceTimersByTimeAsync(22_000);
+      expect(
+        tunnel.trace.some(
+          (line) =>
+            line.includes('rehello-watch') && line.includes('oldest=agent:parent-history-tail')
+        )
+      ).toBe(true);
+      expect(rejected).toBeNull();
+
+      // 继续推进至超过 3 轮仍无回包：触发 timeout reject 并清空 pending，不再无限发 rehello-watch
+      await vi.advanceTimersByTimeAsync(200_000);
+      expect(rejected?.message).toBe('remote-invoke-timeout');
+      const hellosBefore = hellos().length;
+      await vi.advanceTimersByTimeAsync(180_000);
+      expect(hellos().length).toBe(hellosBefore);
+      expect(
+        tunnel.trace.some(
+          (line) => line.includes('timeout') && line.includes('agent:parent-history-tail')
+        )
+      ).toBe(true);
+    } finally {
+      vi.stubGlobal('window', origWindow);
+      vi.stubGlobal('document', origDocument);
+    }
+  });
 });

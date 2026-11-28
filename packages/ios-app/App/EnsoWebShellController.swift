@@ -25,6 +25,7 @@ final class EnsoWebShellController: NSObject, ObservableObject {
     private var pendingDeskFetches: [String: (LocalProxyAsset) -> Void] = [:]
     private var deskFetchSeq: UInt64 = 0
     private var pendingScanCallbackId: String?
+    private var backgroundedAt: Date?
     private var started = false
 
     override init() {
@@ -175,9 +176,15 @@ final class EnsoWebShellController: NSObject, ObservableObject {
     }
 
     @objc private func appDidBecomeActive() {
-        // iOS 长时间挂起后台可能回收监听端口，先恢复 LocalWebServer 再通知前端重连
-        if let server, !server.isRunning {
-            _ = try? server.ensureRunning()
+        // iOS 长时间挂起后台可能回收或冻结监听端口（NWListener 仍可能假报 ready）：
+        // 后台超过 10s 或回环探活失败时直接重建同端口监听，确保切前台后的 iframe 重载必通。
+        let bgDuration = backgroundedAt.map { Date().timeIntervalSince($0) } ?? 0
+        backgroundedAt = nil
+        if let server {
+            let needRestart = !server.isRunning || bgDuration >= 10 || !server.probeListening()
+            if needRestart {
+                _ = try? server.ensureRunning(forceRestart: true)
+            }
         }
         // 切回前台时立即通知前端触发原生 QUIC / WebRTC 探活与重连
         EnsoPiPController.shared.handleDidBecomeActive()
@@ -206,6 +213,7 @@ final class EnsoWebShellController: NSObject, ObservableObject {
     }
 
     @objc private func appDidEnterBackground() {
+        backgroundedAt = Date()
         // 不能伪造 persisted=false 的 pagehide，否则前端会误以为页面卸载而向桌面发 rpc-bye，
         // 导致切回前台后宿主拒绝续连（resumed=false）并强制重载整个 iframe。
         // 画中画进行中或开启自动画中画时同样只发 enso:background，保持连接继续驱动 PiP 窗口刷新。

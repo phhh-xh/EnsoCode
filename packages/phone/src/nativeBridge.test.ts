@@ -171,7 +171,7 @@ describe('nativeBridge (iOS 原生壳桥接 + QUIC Happy Eyeballs 回落)', () =
     expect(new TextDecoder().decode(new Uint8Array(received[1] as ArrayBuffer))).toBe('hi');
   });
 
-  it('QUIC 250ms 未建连时自动 Happy Eyeballs 回落到标准 WebSocket', async () => {
+  it('QUIC 超过 Happy Eyeballs 窗口未建连时自动回落到标准 WebSocket，并在冷却期内直走 WSS', async () => {
     const wsCreated: string[] = [];
     class FakeWS {
       readyState = 0;
@@ -221,11 +221,28 @@ describe('nativeBridge (iOS 原生壳桥接 + QUIC Happy Eyeballs 回落)', () =
     expect(nativeMock.openQuic).toHaveBeenCalledTimes(1);
     expect(wsCreated).toHaveLength(0);
 
-    // 250ms Happy Eyeballs timeout triggers WSS fallback
-    await vi.advanceTimersByTimeAsync(300);
+    // 400ms 时（高 RTT 跨境/蜂窝正常握手耗时）仍等待 QUIC，不误回落
+    await vi.advanceTimersByTimeAsync(400);
+    expect(wsCreated).toHaveLength(0);
+
+    // 超过 1500ms Happy Eyeballs 窗口才回落 WSS
+    await vi.advanceTimersByTimeAsync(1_200);
     expect(wsCreated).toEqual(['wss://blocked-udp.example.com/v1/pair/p2?role=guest&token=t2']);
     expect(nativeMock.closeQuic).toHaveBeenCalledTimes(1);
     sock.close();
+
+    // 冷却期内再次建连直接走 WSS，不再白等 QUIC 超时
+    const sock2 = createNativeOrBrowserRelaySocket({
+      relayUrl: 'https://blocked-udp.example.com',
+      wsUrl: 'wss://blocked-udp.example.com/v1/pair/p2?role=guest&token=t2',
+      pairId: 'p2',
+      role: 'guest',
+      token: 't2',
+    });
+    await vi.advanceTimersByTimeAsync(10);
+    expect(nativeMock.openQuic).toHaveBeenCalledTimes(1);
+    expect(wsCreated).toHaveLength(2);
+    sock2.close();
   });
 
   it('兼容 attachHeartbeat 的 addEventListener/removeEventListener（WSS 回落与 QUIC 路径都不抛异常）', async () => {

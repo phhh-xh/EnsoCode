@@ -311,4 +311,40 @@ describe('seedLazy 与 respondPrehashed 快路径', () => {
       { ch: 'conversations:read', args: [], h: 'hc' },
     ]);
   });
+
+  it('RemoteReadClient 在途超期后放行重试，不被挂死的旧请求永久锁死', async () => {
+    let now = 1_000;
+    const store = new Map<string, { h: string; json: string }>();
+    const client = new RemoteReadClient(store, { inflightStaleMs: 5_000, now: () => now });
+    let calls = 0;
+    let resolveFirst!: (value: unknown) => void;
+
+    const first = client.readJson('agent:parent-history-tail\0["c1"]', () => {
+      calls += 1;
+      return new Promise((resolve) => {
+        resolveFirst = resolve;
+      });
+    });
+    // 5s 内并发调用继续复用同一请求
+    now = 3_000;
+    const deduped = client.readJson('agent:parent-history-tail\0["c1"]', () => {
+      calls += 1;
+      return Promise.resolve({ ok: true, messages: ['dup'] });
+    });
+    expect(calls).toBe(1);
+    expect(deduped).toBe(first);
+
+    // 超过 5s 后自动重试或手动重试放行新请求并成功返回
+    now = 6_500;
+    const retried = await client.readJson('agent:parent-history-tail\0["c1"]', async () => {
+      calls += 1;
+      return { ok: true, messages: ['fresh'] };
+    });
+    expect(calls).toBe(2);
+    expect(JSON.parse(retried)).toEqual({ ok: true, messages: ['fresh'] });
+
+    // 旧请求即便晚到也不应抛异常或破坏后续去重
+    resolveFirst({ ok: true, messages: ['late'] });
+    await expect(first).resolves.toBe(JSON.stringify({ ok: true, messages: ['late'] }));
+  });
 });

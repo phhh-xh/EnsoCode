@@ -3,8 +3,12 @@ import {
   absolutizeCssUrls,
   canSaveSnapshot,
   createSnapshotTracker,
+  DESK_READS_CACHE,
+  loadSharedReads,
   offlineSnapshotNote,
   packReads,
+  pruneSharedReads,
+  saveSharedReads,
   snapshotReady,
   unpackReads,
 } from './snapshot';
@@ -313,5 +317,58 @@ describe('packReads / unpackReads', () => {
         ])
       ).size
     ).toBe(1);
+  });
+});
+
+describe('saveSharedReads / loadSharedReads / pruneSharedReads', () => {
+  it('按 pairId 跨构建读写并在解绑时清理', async () => {
+    const stores = new Map<string, Map<string, Response>>();
+    const origCaches = globalThis.caches;
+    const origLocation = globalThis.location;
+    Object.defineProperty(globalThis, 'location', {
+      configurable: true,
+      value: { origin: 'http://127.0.0.1:49321' },
+    });
+    Object.defineProperty(globalThis, 'caches', {
+      configurable: true,
+      value: {
+        async open(name: string) {
+          let bucket = stores.get(name);
+          if (!bucket) {
+            bucket = new Map();
+            stores.set(name, bucket);
+          }
+          return {
+            async put(url: string, res: Response) {
+              bucket!.set(url, res);
+            },
+            async match(url: string) {
+              return bucket!.get(url)?.clone();
+            },
+            async keys() {
+              return [...bucket!.keys()].map((url) => ({ url }));
+            },
+            async delete(req: { url: string }) {
+              return bucket!.delete(req.url);
+            },
+          };
+        },
+      },
+    });
+    try {
+      const reads = new Map([['conversations:read\0[]', { h: 'hc1', json: '{"ok":1}' }]]);
+      await saveSharedReads('pair-a', reads);
+      await saveSharedReads('pair-b', reads);
+      expect(stores.has(DESK_READS_CACHE)).toBe(true);
+      const loaded = await loadSharedReads('pair-a');
+      expect(loaded.get('conversations:read\0[]')).toEqual({ h: 'hc1', json: '{"ok":1}' });
+
+      await pruneSharedReads(['pair-a']);
+      expect((await loadSharedReads('pair-a')).size).toBe(1);
+      expect((await loadSharedReads('pair-b')).size).toBe(0);
+    } finally {
+      Object.defineProperty(globalThis, 'caches', { configurable: true, value: origCaches });
+      Object.defineProperty(globalThis, 'location', { configurable: true, value: origLocation });
+    }
   });
 });

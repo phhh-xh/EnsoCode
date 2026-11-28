@@ -59,12 +59,49 @@ public final class LocalWebServer: @unchecked Sendable {
     }
 
     /// iOS 长时间挂起后台后系统可能回收 NWListener 套接字；切回前台调用此方法确保原端口恢复监听。
+    /// `forceRestart` 为 true 时无条件重建监听：iOS 挂起后 NWListener 可能处于假 ready/waiting，
+    /// 仍报 `isRunning == true` 但已不再接受 127.0.0.1 建连，导致 iframe 重载卡死。
     @discardableResult
-    public func ensureRunning() throws -> UInt16 {
-        if isRunning { return assignedPort }
+    public func ensureRunning(forceRestart: Bool = false) throws -> UInt16 {
+        if !forceRestart, isRunning { return assignedPort }
         let targetPort = assignedPort
         stop()
         return try start(preferredPort: targetPort)
+    }
+
+    /// 回环 TCP 探活（带短超时）：确认当前监听套接字真正可接新连接，避免假活。
+    public func probeListening(timeout: TimeInterval = 0.25) -> Bool {
+        guard isRunning, assignedPort > 0, let nwPort = NWEndpoint.Port(rawValue: assignedPort) else {
+            return false
+        }
+        let conn = NWConnection(host: .ipv4(.loopback), port: nwPort, using: .tcp)
+        let sema = DispatchSemaphore(value: 0)
+        let lock = NSLock()
+        var settled = false
+        var ok = false
+        let finish: (Bool) -> Void = { value in
+            lock.lock()
+            let first = !settled
+            settled = true
+            if first { ok = value }
+            lock.unlock()
+            if first { sema.signal() }
+        }
+        conn.stateUpdateHandler = { state in
+            switch state {
+            case .ready:
+                finish(true)
+            case .failed, .cancelled:
+                finish(false)
+            default:
+                break
+            }
+        }
+        let probeQueue = DispatchQueue(label: "com.ensocode.localweb.probe")
+        conn.start(queue: probeQueue)
+        _ = sema.wait(timeout: .now() + timeout)
+        conn.cancel()
+        return ok
     }
 
     private func bind(port preferredPort: UInt16) throws -> UInt16 {
@@ -96,6 +133,10 @@ public final class LocalWebServer: @unchecked Sendable {
                 signaled = true
                 self.stateLock.unlock()
                 if shouldSignal { ready.signal() }
+            case .waiting:
+                self.stateLock.lock()
+                self.running = false
+                self.stateLock.unlock()
             case .failed(let err):
                 self.stateLock.lock()
                 self.running = false

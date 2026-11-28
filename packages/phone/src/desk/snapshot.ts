@@ -234,6 +234,8 @@ export function mountSnapshot(container: HTMLElement, html: string): HTMLIFrameE
 }
 
 const READS_FILE = '__reads.json';
+/** 跨桌面构建共享的只读缓存桶：reads 按内容 hash 校验，不绑定具体 beta 构建号 */
+export const DESK_READS_CACHE = 'enso-desk-reads';
 /** 持久化的只读结果上限（字符），与 shim 内存缓存上限一致 */
 const READS_BUDGET = 8_000_000;
 
@@ -268,6 +270,8 @@ export function unpackReads(text: string): Map<string, ReadEntry> {
 }
 
 const readsUrl = (base: string) => `${location.origin}${base}/${READS_FILE}`;
+const sharedReadsUrl = (pairId: string) =>
+  `${location.origin}/desk/reads/${encodeURIComponent(pairId)}/${READS_FILE}`;
 
 /** 下次启动时 shim 带着 hash 去问，内容没变宿主只回「没变」，不必再经中继下载 */
 export async function saveReads(
@@ -290,6 +294,44 @@ export async function loadReads(cacheName: string, base: string): Promise<Map<st
   } catch {
     return new Map();
   }
+}
+
+/** 按配对设备持久化只读缓存（跨构建复用，升级 beta 不丢 __reads.json / prefetch 缓存） */
+export async function saveSharedReads(
+  pairId: string,
+  reads: Map<string, ReadEntry>
+): Promise<void> {
+  if (reads.size === 0 || typeof caches === 'undefined') return;
+  const cache = await caches.open(DESK_READS_CACHE);
+  await cache.put(
+    sharedReadsUrl(pairId),
+    new Response(packReads(reads), { headers: { 'Content-Type': 'application/json' } })
+  );
+}
+
+export async function loadSharedReads(pairId: string): Promise<Map<string, ReadEntry>> {
+  if (typeof caches === 'undefined') return new Map();
+  try {
+    const hit = await (await caches.open(DESK_READS_CACHE)).match(sharedReadsUrl(pairId));
+    return hit ? unpackReads(await hit.text()) : new Map();
+  } catch {
+    return new Map();
+  }
+}
+
+/** 删掉已解绑设备的跨构建只读缓存 */
+export async function pruneSharedReads(pairIds: string[]): Promise<void> {
+  if (typeof caches === 'undefined') return;
+  try {
+    const keep = new Set(
+      pairIds.map((id) => `/desk/reads/${encodeURIComponent(id)}/${READS_FILE}`)
+    );
+    const cache = await caches.open(DESK_READS_CACHE);
+    for (const request of await cache.keys()) {
+      const path = new URL(request.url).pathname;
+      if (!keep.has(path)) await cache.delete(request);
+    }
+  } catch {}
 }
 
 /** 删掉已不在配对列表里的设备的快照与只读缓存 */

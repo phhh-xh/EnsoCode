@@ -355,7 +355,7 @@ async function hello(link: RemoteLink, command: Extract<RemoteToHost, { type: 'r
 
 async function invoke(link: RemoteLink, command: Extract<RemoteToHost, { type: 'rpc-invoke' }>) {
   const sender = getRemoteSender(link.pairId, command.cid);
-  if (!sender?.online) {
+  if (!sender) {
     link.send({
       type: 'rpc-result',
       cid: command.cid,
@@ -365,6 +365,8 @@ async function invoke(link: RemoteLink, command: Extract<RemoteToHost, { type: '
     });
     return;
   }
+  // sender 仍在宽限期挂起中：等浏览器紧随其后的 rpc-hello 续连并重发，不提前拒掉导致误判空历史
+  if (!sender.online) return;
   // 浏览器续上后会重发未决 invoke：已处理过的不再执行，结果由 seq 补发送达
   if (!sender.accept(command.id)) return;
   const fail = (error: string) =>

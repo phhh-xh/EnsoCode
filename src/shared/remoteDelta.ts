@@ -22,6 +22,8 @@ const UPSERT_BASES = 32;
 const READ_CACHE_ENTRIES = 64;
 const READ_CACHE_CHARS = 16 * 1024 * 1024;
 const CLIENT_CACHE_CHARS = 8 * 1024 * 1024;
+/** 同一只读 key 超过此时长仍在途时放行新重试，避免单个挂死 RPC 锁死后续 6s 自动重拉与手动重试 */
+export const READ_INFLIGHT_STALE_MS = 5_500;
 
 function markOf<T>(value: unknown, key: string): T | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
@@ -368,18 +370,34 @@ export function collectPrefetchItems(
 
 /** shim 侧：同时发出的相同读取共用一次请求；结果按 hash 缓存（store 可放在父页面，跨 iframe 重载保留） */
 export class RemoteReadClient {
-  private inflight = new Map<string, Promise<string>>();
+  private inflight = new Map<string, { promise: Promise<string>; at: number }>();
+  private readonly inflightStaleMs: number;
+  private readonly now: () => number;
 
-  constructor(private store: RemoteReadStore) {}
+  constructor(
+    private store: RemoteReadStore,
+    options: { inflightStaleMs?: number; now?: () => number } = {}
+  ) {
+    this.inflightStaleMs = options.inflightStaleMs ?? READ_INFLIGHT_STALE_MS;
+    this.now = options.now ?? (() => Date.now());
+  }
 
   /** 返回已缓存版本的原始 JSON（供需要懒构建基线的调用方复解析，避免 startup structuredClone） */
   readJson(key: string, send: (ifNone: string) => Promise<unknown>): Promise<string> {
-    let pending = this.inflight.get(key);
-    if (!pending) {
-      pending = this.fetch(key, send).finally(() => this.inflight.delete(key));
-      this.inflight.set(key, pending);
+    const now = this.now();
+    const existing = this.inflight.get(key);
+    if (existing && now - existing.at < this.inflightStaleMs) {
+      return existing.promise;
     }
-    return pending;
+    const entry: { promise: Promise<string>; at: number } = {
+      at: now,
+      promise: Promise.resolve(''),
+    };
+    entry.promise = this.fetch(key, send).finally(() => {
+      if (this.inflight.get(key) === entry) this.inflight.delete(key);
+    });
+    this.inflight.set(key, entry);
+    return entry.promise;
   }
 
   /** 返回编码值（每次调用独立副本） */

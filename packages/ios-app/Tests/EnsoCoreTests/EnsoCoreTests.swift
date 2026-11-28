@@ -116,9 +116,15 @@ final class EnsoCoreTests: XCTestCase {
         // 模拟 iOS 后台回收后 stop -> ensureRunning() 恢复同一端口
         server.stop()
         XCTAssertFalse(server.isRunning)
+        XCTAssertFalse(server.probeListening())
         let recoveredPort = try server.ensureRunning()
         XCTAssertTrue(server.isRunning)
         XCTAssertEqual(recoveredPort, port)
+        XCTAssertTrue(server.probeListening())
+        // 强制重建同样保住同一端口且可响应
+        let forcedPort = try server.ensureRunning(forceRestart: true)
+        XCTAssertEqual(forcedPort, port)
+        XCTAssertTrue(server.probeListening())
         let (a3, resp3) = try await URLSession.shared.data(from: server.baseURL)
         XCTAssertEqual((resp3 as? HTTPURLResponse)?.statusCode, 200)
         XCTAssertEqual(String(data: a3, encoding: .utf8), "<!doctype html><title>Enso</title>")

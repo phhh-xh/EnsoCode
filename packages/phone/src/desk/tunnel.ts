@@ -57,6 +57,7 @@ interface Slot {
     {
       message: Request;
       at: number;
+      rehellos: number;
       resolve: (payload: string) => void;
       reject: (error: Error) => void;
     }
@@ -91,6 +92,8 @@ const encodedArgs = (args: unknown[]) => JSON.stringify(args);
 const ASSET_RETRY_MS = 10_000;
 const MAX_RECENT_SENDS = 200;
 const WATCH_MS = 2_000;
+/** 连续多少轮 rehello-watch 后仍无回包的挂死请求直接超时收口，避免每 60s 无限空转 */
+const MAX_PENDING_REHELLOS = 3;
 /** 不阻塞首屏内容可读的低优后台通道：仍在途时不拖住快照遮罩揭开 */
 const BACKGROUND_IDLE_CHANNELS: ReadonlySet<string> = new Set([
   'worktree:list',
@@ -315,9 +318,23 @@ export class DeskTunnel {
       const now = Date.now();
       let acked = false;
       for (const slot of this.slots.values()) {
-        let pendingAt: number | undefined;
-        for (const entry of slot.pending.values())
-          pendingAt = Math.min(pendingAt ?? entry.at, entry.at);
+        let oldestId: number | undefined;
+        let oldest:
+          | {
+              message: Request;
+              at: number;
+              rehellos: number;
+              resolve: (payload: string) => void;
+              reject: (error: Error) => void;
+            }
+          | undefined;
+        for (const [id, entry] of slot.pending) {
+          if (!oldest || entry.at < oldest.at) {
+            oldest = entry;
+            oldestId = id;
+          }
+        }
+        const pendingAt = oldest?.at;
         if (
           !needsRehello(
             now,
@@ -327,9 +344,24 @@ export class DeskTunnel {
           )
         )
           continue;
+        if (
+          slot.ready &&
+          oldest &&
+          oldestId !== undefined &&
+          oldest.rehellos >= MAX_PENDING_REHELLOS
+        ) {
+          slot.pending.delete(oldestId);
+          this.note(`timeout ${slot.cid.slice(0, 4)} ${oldest.message.ch} ${now - oldest.at}ms`);
+          oldest.reject(new Error('remote-invoke-timeout'));
+          continue;
+        }
+        if (slot.ready && oldest) oldest.rehellos += 1;
         if (!acked) this.ack();
         acked = true;
-        this.note(`rehello-watch ${slot.cid.slice(0, 4)} ready=${slot.ready}`);
+        const detail = oldest
+          ? ` oldest=${oldest.message.ch} ${now - oldest.at}ms n=${slot.pending.size}`
+          : '';
+        this.note(`rehello-watch ${slot.cid.slice(0, 4)} ready=${slot.ready}${detail}`);
         this.hello(slot);
       }
     }
@@ -533,8 +565,12 @@ export class DeskTunnel {
 
   private ordered(slot: Slot, frame: Sequenced): void {
     const before = slot.stream.applied;
-    // rpc-result 按 req id 一一对应，不等前置 rpc-event 补齐即可先兑现 invoke，避开队头阻塞
-    if (frame.type === 'rpc-result' && frame.seq !== undefined && frame.seq > slot.stream.applied) {
+    // rpc-result 按 req id 一一对应，不等前置 rpc-event 补齐即可先兑现 invoke，避开队头阻塞；
+    // 无 seq 的结果（宿主拒绝或旧宿主）也必须立即应用，否则落入 null 占位会被静默吞掉
+    if (
+      frame.type === 'rpc-result' &&
+      (frame.seq === undefined || frame.seq > slot.stream.applied)
+    ) {
       this.apply(slot, frame);
     }
     const item = frame.type === 'rpc-result' ? null : frame;
@@ -828,7 +864,13 @@ export class DeskTunnel {
             ch: channel,
             args: JSON.parse(payload),
           };
-          slot.pending.set(message.id as number, { message, at: Date.now(), resolve, reject });
+          slot.pending.set(message.id as number, {
+            message,
+            at: Date.now(),
+            rehellos: 0,
+            resolve,
+            reject,
+          });
           this.enqueue(slot, message);
         }),
       send: (channel, payload) => {

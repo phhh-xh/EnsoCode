@@ -186,26 +186,29 @@ public final class QuicRelayConnection: @unchecked Sendable {
             guard let self, !self.closed else { return }
             switch state {
             case .ready:
-                let header = Data([kind.rawValue])
-                stream.send(content: header, completion: .contentProcessed { [weak self] error in
-                    guard let self, !self.closed else { return }
-                    if let error {
-                        if kind != .bulk {
-                            self.finishClose(code: 1006, reason: "stream-header:\(error)")
+                switch kind {
+                case .control:
+                    // 把 1 字节流头与 hello 帧合并进单次 send，减少一次往返/调度延迟
+                    self.sendControlHeaderAndHello(on: stream)
+                case .ctrl, .bulk:
+                    let header = Data([kind.rawValue])
+                    stream.send(content: header, completion: .contentProcessed { [weak self] error in
+                        guard let self, !self.closed else { return }
+                        if let error {
+                            if kind != .bulk {
+                                self.finishClose(code: 1006, reason: "stream-header:\(error)")
+                            }
+                            return
                         }
-                        return
-                    }
-                    switch kind {
-                    case .ctrl:
-                        self.ctrlReady = true
-                        self.receiveNextFrame(from: stream, kind: .ctrl)
-                        self.maybeEmitOpen()
-                    case .bulk:
-                        self.receiveNextFrame(from: stream, kind: .bulk)
-                    case .control:
-                        self.sendHello(on: stream)
-                    }
-                })
+                        if kind == .ctrl {
+                            self.ctrlReady = true
+                            self.receiveNextFrame(from: stream, kind: .ctrl)
+                            self.maybeEmitOpen()
+                        } else {
+                            self.receiveNextFrame(from: stream, kind: .bulk)
+                        }
+                    })
+                }
             case .failed(let error):
                 if kind != .bulk {
                     self.finishClose(code: 1006, reason: "stream-failed:\(error)")
@@ -220,11 +223,14 @@ public final class QuicRelayConnection: @unchecked Sendable {
         }
     }
 
-    private func sendHello(on stream: NWConnection) {
+    private func sendControlHeaderAndHello(on stream: NWConnection) {
         do {
             let helloBytes = try JSONEncoder().encode(config.hello)
             let framed = try QuicFrameCodec.encodeFrame(helloBytes)
-            stream.send(content: framed, completion: .contentProcessed { [weak self] error in
+            var combined = Data(capacity: 1 + framed.count)
+            combined.append(EnsoQuicStreamKind.control.rawValue)
+            combined.append(framed)
+            stream.send(content: combined, completion: .contentProcessed { [weak self] error in
                 guard let self, !self.closed else { return }
                 if let error {
                     self.finishClose(code: 1006, reason: "hello-send:\(error)")
