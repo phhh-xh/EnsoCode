@@ -382,18 +382,20 @@ export function SettingsContent({
               data-enso="settings-back"
               onClick={embedded.onBack}
               className={cn(
-                'flex items-center gap-1.5 rounded-md pr-2 text-sm font-medium text-foreground transition-colors hover:bg-accent/50',
-                isMobile ? 'h-11 pl-1.5' : 'h-8 pl-1'
+                'flex w-full min-w-0 items-center gap-2 rounded-md px-3 text-sm font-medium text-foreground transition-colors hover:bg-background/60',
+                isMobile ? 'h-11' : 'h-8'
               )}
               title={t('Back to workspace')}
               aria-label={t('Back to workspace')}
             >
-              <ArrowLeft className="h-4 w-4 text-muted-foreground" />
-              {t('Settings')}
+              <ArrowLeft className="h-4 w-4 shrink-0 text-muted-foreground" />
+              <span className="truncate">{t('Settings')}</span>
+              {!isMobile && (
+                <span className="ml-auto shrink-0 text-[11px] font-normal text-muted-foreground">
+                  Esc
+                </span>
+              )}
             </button>
-            {!isMobile && (
-              <span className="ml-auto pr-1 text-[11px] text-muted-foreground">Esc</span>
-            )}
           </div>
           <div className="sticky top-0 z-10 px-2 pt-2">
             <SettingsSearch

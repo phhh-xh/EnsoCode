@@ -72,10 +72,12 @@ function Settings({
   link = null,
   linkSeq = 0,
   onNavResize,
+  onBack = noop,
 }: {
   link?: SettingsDeepLink | null;
   linkSeq?: number;
   onNavResize?: (dx: number) => void;
+  onBack?: () => void;
 }) {
   const [mobileDetail, setMobileDetail] = React.useState(false);
   return (
@@ -87,7 +89,7 @@ function Settings({
         onCategoryChange: noop,
         mobileDetail,
         onMobileDetailChange: setMobileDetail,
-        onBack: noop,
+        onBack,
         navWidth: 260,
         onNavResize,
       }}
@@ -280,6 +282,25 @@ describe('设置分区各自的滚动位置', () => {
     await act(async () => back().click());
     await open('General');
     expect(top()).toBe(300);
+  });
+});
+
+describe('侧栏顶部返回项', () => {
+  it('Esc 提示在返回按钮里，点它也返回', async () => {
+    const back = vi.fn();
+    await act(async () => root.render(<Settings onBack={back} />));
+    const button = container.querySelector('[data-enso="settings-back"]') as HTMLElement;
+    const hint = [...button.querySelectorAll('span')].find((el) => el.textContent === 'Esc');
+    expect(hint, 'Esc hint inside back button').toBeTruthy();
+    await act(async () => (hint as HTMLElement).click());
+    expect(back).toHaveBeenCalledTimes(1);
+  });
+
+  it('窄屏不显示 Esc 提示', async () => {
+    harness.mobile = true;
+    await act(async () => root.render(<Settings />));
+    const button = container.querySelector('[data-enso="settings-back"]') as HTMLElement;
+    expect(button.textContent).not.toContain('Esc');
   });
 });
 
