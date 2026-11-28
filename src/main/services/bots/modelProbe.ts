@@ -1,3 +1,4 @@
+import { withAgyProvider } from '../../../shared/agy/settings';
 import {
   type DefaultModelRef,
   type ModelCredentialContext,
@@ -9,6 +10,7 @@ import type { SpawnModelConfig } from '../../../shared/types/agent';
 import type { BotEngine } from '../../../shared/types/bot';
 import type { ModelProvider } from '../../../shared/types/llm';
 import { findVirtualModel, isVirtualRef, parseVirtualModels } from '../../../shared/virtualModels';
+import { cachedAgyModels } from '../agyProbe';
 import { getModelDirectorySnapshot } from '../modelDirectory';
 import { pickBotModel } from './botPrompt';
 
@@ -70,7 +72,12 @@ function providersFrom(state: Record<string, unknown> | undefined): ModelProvide
           typeof (provider as ModelProvider).id === 'string'
       )
     : [];
-  return materializeProviders(raw, getModelDirectorySnapshot());
+  // 与 Main 建会话的 providersFromSettings 同口径：已添加的 agy cli 也在内
+  return withAgyProvider(
+    materializeProviders(raw, getModelDirectorySnapshot()),
+    state?.agy,
+    cachedAgyModels()
+  );
 }
 
 /** 展示用模型名：虚拟条目用其名字，物理模型用「模型 id (供应商名)」 */

@@ -1,6 +1,9 @@
+import { AGY_DEFAULT_MODEL_ID, AGY_PROVIDER_ID } from '@shared/agy/constants';
+import { EMPTY_AGY_SETTINGS } from '@shared/agy/types';
 import type { OauthCredentialAvailability } from '@shared/defaultModel';
 import type { ModelProvider } from '@shared/types';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { useAgyAuthStore } from '@/stores/agyAuth';
 import { useModelDirectoryStore } from '@/stores/modelDirectory';
 import { useOauthCredentialStore } from '@/stores/oauthCredentials';
 
@@ -32,6 +35,7 @@ vi.stubGlobal('window', {
   },
 });
 const settingsModule = await import('./index');
+const { readMaterializedProviders } = await import('@/stores/modelDirectory/useProviders');
 
 function provider(id: string, overrides: Partial<ModelProvider> = {}): ModelProvider {
   return {
@@ -81,7 +85,76 @@ describe('settings default model actions', () => {
     readSettings.mockResolvedValue(null);
     settingsModule.useSettingsStore.setState({ providers: [], defaultModel: null });
     settingsModule.useDefaultModelRevalidationStore.setState({ latest: null });
+    useAgyAuthStore.setState({ status: { status: 'unknown' }, cachedModels: [] });
     writeKey.mockClear();
+  });
+
+  describe('默认模型在 agy cli 上', () => {
+    const ADDED = { added: true, binaryPath: '', skipPermissions: false };
+    const ready = () => setSnapshot(1, { status: 'ready', authenticatedAccountKeys: new Set() });
+
+    it('已添加时默认模型可用（unchanged），与 Main 同一服务商清单', () => {
+      const snapshot = ready();
+      settingsModule.useSettingsStore.setState({
+        agy: ADDED,
+        defaultModel: { providerId: AGY_PROVIDER_ID, modelId: AGY_DEFAULT_MODEL_ID },
+      });
+      expect(settingsModule.useSettingsStore.getState().revalidateDefaultModel(snapshot)).toEqual({
+        status: 'unchanged',
+        defaultModel: { providerId: AGY_PROVIDER_ID, modelId: AGY_DEFAULT_MODEL_ID },
+        writeback: false,
+      });
+      expect(readMaterializedProviders().map((p) => p.id)).toContain(AGY_PROVIDER_ID);
+    });
+
+    it('未添加时默认模型不可用并标明找不到服务商，原样保留不替换', () => {
+      const snapshot = ready();
+      settingsModule.useSettingsStore.setState({
+        providers: [provider('fallback')],
+        agy: EMPTY_AGY_SETTINGS,
+        defaultModel: { providerId: AGY_PROVIDER_ID, modelId: AGY_DEFAULT_MODEL_ID },
+      });
+      expect(settingsModule.useSettingsStore.getState().revalidateDefaultModel(snapshot)).toEqual({
+        status: 'unavailable',
+        defaultModel: { providerId: AGY_PROVIDER_ID, modelId: AGY_DEFAULT_MODEL_ID },
+        reason: 'provider-missing',
+        writeback: false,
+      });
+      expect(settingsModule.useSettingsStore.getState().defaultModel).toEqual({
+        providerId: AGY_PROVIDER_ID,
+        modelId: AGY_DEFAULT_MODEL_ID,
+      });
+      expect(readMaterializedProviders().map((p) => p.id)).toEqual(['fallback']);
+    });
+
+    it('探测清单晚到时重验，探测到的模型不再被判 model-missing', () => {
+      const snapshot = ready();
+      settingsModule.useSettingsStore.setState({
+        agy: ADDED,
+        defaultModel: { providerId: AGY_PROVIDER_ID, modelId: 'gemini-3-pro' },
+      });
+      expect(
+        settingsModule.useSettingsStore.getState().revalidateDefaultModel(snapshot)
+      ).toMatchObject({ status: 'unavailable', reason: 'model-missing' });
+      useAgyAuthStore.setState({ cachedModels: [{ id: 'gemini-3-pro', name: 'Gemini 3 Pro' }] });
+      expect(settingsModule.useDefaultModelRevalidationStore.getState().latest).toMatchObject({
+        status: 'unchanged',
+      });
+    });
+
+    it('移除 agy cli 后立即把仍指向它的默认模型标为不可用', () => {
+      const snapshot = ready();
+      settingsModule.useSettingsStore.setState({
+        agy: ADDED,
+        defaultModel: { providerId: AGY_PROVIDER_ID, modelId: AGY_DEFAULT_MODEL_ID },
+      });
+      settingsModule.useSettingsStore.getState().revalidateDefaultModel(snapshot);
+      settingsModule.useSettingsStore.getState().setAgy(EMPTY_AGY_SETTINGS);
+      expect(settingsModule.useDefaultModelRevalidationStore.getState().latest).toMatchObject({
+        status: 'unavailable',
+        reason: 'provider-missing',
+      });
+    });
   });
 
   it('setDefaultModel stores only provider/model and clears an old notice', () => {

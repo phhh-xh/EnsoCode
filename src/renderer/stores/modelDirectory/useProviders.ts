@@ -57,10 +57,12 @@ export function useModelDirectorySnapshot(): ModelDirectorySnapshot | undefined 
   return useModelDirectoryStore((state) => state.snapshot);
 }
 
-/** 非组件调用点（store action / 目录同步）与 hook 同一物化口径。 */
+/** 非组件调用点（store action / 目录同步）与 hook 同一物化口径，含已添加的 agy cli。 */
 export function readMaterializedProviders(): ModelProvider[] {
-  return materializeProviders(
-    useSettingsStore.getState().providers,
-    useModelDirectoryStore.getState().snapshot
+  const settings = useSettingsStore.getState();
+  return withAgyProvider(
+    materializeProviders(settings.providers, useModelDirectoryStore.getState().snapshot),
+    settings.agy,
+    agyModelsFromState(useAgyAuthStore.getState())
   );
 }

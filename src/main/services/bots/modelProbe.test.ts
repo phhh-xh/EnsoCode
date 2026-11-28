@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
+
+vi.mock('../agyProbe', () => ({ cachedAgyModels: () => [] }));
+
 import type { DefaultModelRef } from '../../../shared/defaultModel';
 import type { SpawnModelConfig } from '../../../shared/types/agent';
 import {
@@ -324,6 +327,15 @@ describe('describeModelIssue', () => {
     expect(describeModelIssue(state, { providerId: 'ghost', modelId: 'm1' })).toContain(
       '找不到服务商'
     );
+  });
+
+  it('agy cli 按是否添加参与判定，与建会话同一服务商清单', () => {
+    const agy = { providerId: 'agy-cli', modelId: 'default' };
+    const added = { agy: { added: true, binaryPath: '', skipPermissions: false } };
+    expect(describeModelIssue(added, agy)).not.toContain('找不到服务商');
+    expect(describeModelIssue(added, agy)).toContain('agy cli');
+    const removed = { agy: { added: false, binaryPath: '', skipPermissions: false } };
+    expect(describeModelIssue(removed, agy)).toContain('找不到服务商');
   });
 });
 

@@ -1,4 +1,5 @@
 import { toPairProjectEntry } from '@enso/pair';
+import { AGY_PROVIDER_ID } from '@shared/agy/constants';
 import { conversationCwd } from '@shared/conversationCwd';
 import { userAskCount } from '@shared/conversationDotTone';
 import { normalizeLocale, translate } from '@shared/i18n';
@@ -160,7 +161,8 @@ function buildPayload(): PairCatalogPayload {
   // 与桌面选择器同一套可用口径（启用 + 凭证真实可用 + 启用模型），并剥掉密钥。
   // OAuth 未就绪的空列表不结算，main 会扣下这一帧，避免手机显示没有模型服务。
   const providerPlan = pairProviderSyncPlan(
-    readMaterializedProviders(),
+    // 手机目录一直不下发 agy cli；这里保持现状，只让桌面口径补上 agy
+    readMaterializedProviders().filter((provider) => provider.id !== AGY_PROVIDER_ID),
     useOauthCredentialStore.getState().snapshot,
     settings.virtualModels
   );

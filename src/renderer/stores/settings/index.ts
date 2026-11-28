@@ -1,4 +1,5 @@
 import { DEFAULT_ACCENT_COLOR, resolveAccentColor } from '@shared/accentColor';
+import { withAgyProvider } from '@shared/agy/settings';
 import { parseApprovalAllowThreshold } from '@shared/approvalReviewRecord';
 import { DEFAULT_AUTO_RETRY_LIMIT, normalizeAutoRetryLimit } from '@shared/autoRetry';
 import {
@@ -87,6 +88,7 @@ import {
   noteSourceAuthorityProjection,
   readSharedSourceAuthority,
 } from '@/lib/sourceAuthorityCache';
+import { agyModelsFromState, useAgyAuthStore } from '@/stores/agyAuth';
 import { useModelDirectoryStore } from '@/stores/modelDirectory';
 import {
   type OauthCredentialSnapshot,
@@ -459,7 +461,11 @@ export const useSettingsStore = create<SettingsState>()(
       setExploreFoldEnabled: (exploreFoldEnabled) => set({ exploreFoldEnabled }),
       setRtkEnabled: (rtkEnabled) => set({ rtkEnabled }),
       setLongCacheRetention: (longCacheRetention) => set({ longCacheRetention }),
-      setAgy: (agy) => set({ agy }),
+      setAgy: (agy) => {
+        set({ agy });
+        // 添加 / 移除 agy cli 会改变默认模型能否解析
+        get().revalidateDefaultModel(useOauthCredentialStore.getState().snapshot);
+      },
       setComputerPreview: (computerPreview) => set({ computerPreview }),
       setComputerAllowAllApps: (computerAllowAllApps) => set({ computerAllowAllApps }),
       setOpenLinksInBuiltinBrowser: (openLinksInBuiltinBrowser) =>
@@ -732,11 +738,13 @@ export const useSettingsStore = create<SettingsState>()(
         }
 
         // 只体检不改写：不可用的默认原样保留并标出原因，绝不替换成别的模型（用户的选择只由用户改）。
+        // 服务商清单与 Main 的 providersFromSettings 同口径：已添加的 agy cli 也在内。
         const assessed = assessDefaultModel({
           defaultModel,
-          providers: materializeProviders(
-            get().providers,
-            useModelDirectoryStore.getState().snapshot
+          providers: withAgyProvider(
+            materializeProviders(get().providers, useModelDirectoryStore.getState().snapshot),
+            get().agy,
+            agyModelsFromState(useAgyAuthStore.getState())
           ),
           credentials: oauthCredentialContext(snapshot),
           virtualModels: get().virtualModels,
@@ -1524,6 +1532,12 @@ window.electronAPI.settings.onChanged(() => {
 // 目录晚于 settings 水合到达时，稀疏 OAuth 覆盖表不能把仍有效的默认模型判丢。
 useModelDirectoryStore.subscribe((state, prev) => {
   if (state.snapshot === prev.snapshot) return;
+  useSettingsStore.getState().revalidateDefaultModel(useOauthCredentialStore.getState().snapshot);
+});
+
+// agy 模型清单从 Main 缓存晚到 / 本窗口探测后变化：默认模型若是探测到的 agy 模型需要重验。
+useAgyAuthStore.subscribe((state, prev) => {
+  if (state.cachedModels === prev.cachedModels && state.status === prev.status) return;
   useSettingsStore.getState().revalidateDefaultModel(useOauthCredentialStore.getState().snapshot);
 });
 
