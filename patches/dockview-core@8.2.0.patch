@@ -1,0 +1,86 @@
+diff --git a/dist/package/main.cjs.js b/dist/package/main.cjs.js
+index 3d3f2c8a49b845c0630f1692f2f6fa3fa3d6e87f..24cbaaaedbf2bd1a9343b70cc754b92f539541e5 100644
+--- a/dist/package/main.cjs.js
++++ b/dist/package/main.cjs.js
+@@ -5575,24 +5575,25 @@ var ContentContainer = class extends CompositeDisposable {
+ 		else this._element.removeAttribute("aria-labelledby");
+ 	}
+ 	renderPanel(panel, options) {
+-		var _options$asActive, _this$panel;
+-		const doRender = ((_options$asActive = options === null || options === void 0 ? void 0 : options.asActive) !== null && _options$asActive !== void 0 ? _options$asActive : true) || this.panel && this.group.isPanelActive(this.panel);
+-		if (((_this$panel = this.panel) === null || _this$panel === void 0 ? void 0 : _this$panel.view.content.element.parentElement) === this._element) {
+-			var _this$panel$view$cont, _this$panel$view$cont2;
+-			this.panel.view.content.element.remove();
+-			(_this$panel$view$cont = (_this$panel$view$cont2 = this.panel.view.content).onHide) === null || _this$panel$view$cont === void 0 || _this$panel$view$cont.call(_this$panel$view$cont2);
++		var _options$asActive;
++		const doRender = ((_options$asActive = options === null || options === void 0 ? void 0 : options.asActive) !== null && _options$asActive !== void 0 ? _options$asActive : true) || this.group.isPanelActive(panel);
++		if (doRender || this.panel === panel) {
++			var _this$panel;
++			if (((_this$panel = this.panel) === null || _this$panel === void 0 ? void 0 : _this$panel.view.content.element.parentElement) === this._element) {
++				var _this$panel$view$cont, _this$panel$view$cont2;
++				this.panel.view.content.element.remove();
++				(_this$panel$view$cont = (_this$panel$view$cont2 = this.panel.view.content).onHide) === null || _this$panel$view$cont === void 0 || _this$panel$view$cont.call(_this$panel$view$cont2);
++			}
++			this.panel = panel;
+ 		}
+-		this.panel = panel;
+ 		let container;
+ 		switch (panel.api.renderer) {
+ 			case "onlyWhenVisible":
+ 				this.group.renderContainer.detatch(panel);
+-				if (this.panel) {
+-					if (doRender) {
+-						var _this$panel$view$cont3, _this$panel$view$cont4;
+-						this._element.appendChild(this.panel.view.content.element);
+-						(_this$panel$view$cont3 = (_this$panel$view$cont4 = this.panel.view.content).onShow) === null || _this$panel$view$cont3 === void 0 || _this$panel$view$cont3.call(_this$panel$view$cont4);
+-					}
++				if (doRender) {
++					var _panel$view$content$o, _panel$view$content;
++					this._element.appendChild(panel.view.content.element);
++					(_panel$view$content$o = (_panel$view$content = panel.view.content).onShow) === null || _panel$view$content$o === void 0 || _panel$view$content$o.call(_panel$view$content);
+ 				}
+ 				container = this._element;
+ 				break;
+diff --git a/dist/package/main.esm.mjs b/dist/package/main.esm.mjs
+index 6e8fd8c1dd781d0f24b1aa5d911edf6e5a0aeda2..aa537f418abf1d6b61497d5bf23ceb346bfb2545 100644
+--- a/dist/package/main.esm.mjs
++++ b/dist/package/main.esm.mjs
+@@ -5573,24 +5573,25 @@ var ContentContainer = class extends CompositeDisposable {
+ 		else this._element.removeAttribute("aria-labelledby");
+ 	}
+ 	renderPanel(panel, options) {
+-		var _options$asActive, _this$panel;
+-		const doRender = ((_options$asActive = options === null || options === void 0 ? void 0 : options.asActive) !== null && _options$asActive !== void 0 ? _options$asActive : true) || this.panel && this.group.isPanelActive(this.panel);
+-		if (((_this$panel = this.panel) === null || _this$panel === void 0 ? void 0 : _this$panel.view.content.element.parentElement) === this._element) {
+-			var _this$panel$view$cont, _this$panel$view$cont2;
+-			this.panel.view.content.element.remove();
+-			(_this$panel$view$cont = (_this$panel$view$cont2 = this.panel.view.content).onHide) === null || _this$panel$view$cont === void 0 || _this$panel$view$cont.call(_this$panel$view$cont2);
++		var _options$asActive;
++		const doRender = ((_options$asActive = options === null || options === void 0 ? void 0 : options.asActive) !== null && _options$asActive !== void 0 ? _options$asActive : true) || this.group.isPanelActive(panel);
++		if (doRender || this.panel === panel) {
++			var _this$panel;
++			if (((_this$panel = this.panel) === null || _this$panel === void 0 ? void 0 : _this$panel.view.content.element.parentElement) === this._element) {
++				var _this$panel$view$cont, _this$panel$view$cont2;
++				this.panel.view.content.element.remove();
++				(_this$panel$view$cont = (_this$panel$view$cont2 = this.panel.view.content).onHide) === null || _this$panel$view$cont === void 0 || _this$panel$view$cont.call(_this$panel$view$cont2);
++			}
++			this.panel = panel;
+ 		}
+-		this.panel = panel;
+ 		let container;
+ 		switch (panel.api.renderer) {
+ 			case "onlyWhenVisible":
+ 				this.group.renderContainer.detatch(panel);
+-				if (this.panel) {
+-					if (doRender) {
+-						var _this$panel$view$cont3, _this$panel$view$cont4;
+-						this._element.appendChild(this.panel.view.content.element);
+-						(_this$panel$view$cont3 = (_this$panel$view$cont4 = this.panel.view.content).onShow) === null || _this$panel$view$cont3 === void 0 || _this$panel$view$cont3.call(_this$panel$view$cont4);
+-					}
++				if (doRender) {
++					var _panel$view$content$o, _panel$view$content;
++					this._element.appendChild(panel.view.content.element);
++					(_panel$view$content$o = (_panel$view$content = panel.view.content).onShow) === null || _panel$view$content$o === void 0 || _panel$view$content$o.call(_panel$view$content);
+ 				}
+ 				container = this._element;
+ 				break;

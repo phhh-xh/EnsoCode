@@ -14,6 +14,9 @@ patchedDependencies:
   '@rahularya01/pi-cursor@1.4.39':
     hash: 20f1fb7abac3c13ae2ae558c1cbc6f036dbac222b87b10f53550ffba0caf6486
     path: patches/@rahularya01__pi-cursor@1.4.39.patch
+  dockview-core@8.2.0:
+    hash: c48d566af696434dc4477029746a00b8c36f6f13796860de2ef2d4abe460fa75
+    path: patches/dockview-core@8.2.0.patch
   electron-vite@5.0.0:
     hash: 7b9f2c1cf3d2fe10c6e7513586e3755a66d42f7259e1f1732f90d16ec5725865
     path: patches/electron-vite@5.0.0.patch
@@ -8728,7 +8731,7 @@ snapshots:
       - electron-builder-squirrel-windows
       - supports-color
 
-  dockview-core@8.2.0: {}
+  dockview-core@8.2.0(patch_hash=c48d566af696434dc4477029746a00b8c36f6f13796860de2ef2d4abe460fa75): {}
 
   dockview-react@8.2.0(react-dom@19.2.8(react@19.2.8))(react@19.2.8):
     dependencies:
@@ -8738,7 +8741,7 @@ snapshots:
 
   dockview@8.2.0:
     dependencies:
-      dockview-core: 8.2.0
+      dockview-core: 8.2.0(patch_hash=c48d566af696434dc4477029746a00b8c36f6f13796860de2ef2d4abe460fa75)
 
   dom-serializer@2.0.0:
     dependencies:
