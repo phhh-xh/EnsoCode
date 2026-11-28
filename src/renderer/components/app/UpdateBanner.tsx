@@ -8,6 +8,7 @@ import { isRemoteClient } from '@/lib/remoteClient';
 import { BannerBar } from './BannerBar';
 import { ManualInstallActions } from './ManualInstallActions';
 import { ReleaseNotesDialog } from './ReleaseNotesDialog';
+import { useRestartOverlayStore } from './restartOverlayStore';
 import { restartToUpdate } from './restartToUpdate';
 
 /** 主窗口顶部更新横幅:发现新版(桌面)可看日志再下载,下载完成后提示重启(可关闭) */
@@ -18,6 +19,10 @@ export function UpdateBanner() {
   const [dismissed, setDismissed] = useState(false);
   const [desktop, setDesktop] = useState(false);
   const [notesOpen, setNotesOpen] = useState(false);
+  // 已经在等命令结束后安装：同一位置的等待条接替横幅，不叠两条
+  const installPending = useRestartOverlayStore(
+    (view) => view.state?.phase === 'waiting' && view.state.exit === 'update'
+  );
 
   useEffect(() => {
     let alive = true;
@@ -53,6 +58,7 @@ export function UpdateBanner() {
   const isAvailable = status.status === 'available' && desktop;
   const visible =
     !dismissed &&
+    !installPending &&
     (status.status === 'downloaded' || status.status === 'downloading' || isAvailable);
   const version = status.info?.version;
   const isDownloaded = status.status === 'downloaded';

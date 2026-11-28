@@ -4,6 +4,7 @@ import { act, type ComponentProps, createElement, type ReactNode, useState } fro
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ReleaseNotesDialog } from './ReleaseNotesDialog';
+import { useRestartOverlayStore } from './restartOverlayStore';
 import { UpdateBanner } from './UpdateBanner';
 
 vi.mock('@/i18n', () => ({
@@ -88,6 +89,13 @@ async function render(element: ReturnType<typeof createElement>): Promise<void> 
   vi.stubGlobal('document', window.document);
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   Object.assign(window, {
+    // 横幅高度动画在 linkedom 里跑不完：按 prefers-reduced-motion 走瞬时路径
+    matchMedia: (query: string) => ({
+      matches: query.includes('prefers-reduced-motion'),
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    }),
     electronAPI: {
       updater: {
         downloadUpdate,
@@ -189,5 +197,27 @@ describe('UpdateBanner', () => {
     expect(dialog()).toBeNull();
     await act(async () => push(available));
     expect(dialog()).toBeNull();
+  });
+
+  it('已经在等命令结束后安装：横幅让位给等待条，等待结束（或换成别的等待）再回来', async () => {
+    const restartLabel = () =>
+      [...container.querySelectorAll('button')].find((b) => b.textContent === 'Restart to update');
+    await render(createElement(UpdateBanner));
+    await act(async () => push({ ...available, status: 'downloaded' } as UpdateStatus));
+    expect(restartLabel()).toBeDefined();
+    await act(async () =>
+      useRestartOverlayStore.setState({
+        state: { phase: 'waiting', reason: 'tool', exit: 'update' },
+      })
+    );
+    expect(restartLabel()).toBeUndefined();
+    await act(async () =>
+      useRestartOverlayStore.setState({
+        state: { phase: 'waiting', reason: 'tool', exit: 'quit' },
+      })
+    );
+    expect(restartLabel()).toBeDefined();
+    await act(async () => useRestartOverlayStore.setState({ state: null }));
+    expect(restartLabel()).toBeDefined();
   });
 });

@@ -2,7 +2,7 @@ import * as React from 'react';
 import { createRoot } from 'react-dom/client';
 import { closeSettings, openSettings, useAppViewStore } from '@/stores/appView';
 import App from './App';
-import { useRestartOverlayStore } from './components/app/RestartWaitDialog';
+import { useRestartOverlayStore } from './components/app/restartOverlayStore';
 import { DiffWorkerPool } from './components/chat/DiffWorkerPool';
 import { syncOverlayGuard } from './lib/overlayGuard';
 import { installScrollbarActivity } from './lib/scrollbars';

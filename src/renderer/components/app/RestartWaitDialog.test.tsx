@@ -4,7 +4,8 @@ import { parseHTML } from 'linkedom';
 import { act, type ComponentProps, createElement, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { RestartWaitDialog, RestartWaitStrip, useRestartOverlayStore } from './RestartWaitDialog';
+import { RestartWaitDialog, RestartWaitStrip } from './RestartWaitDialog';
+import { useRestartOverlayStore } from './restartOverlayStore';
 
 const sessions = vi.hoisted(() => ({
   conversations: {} as Record<string, { title: string }>,
@@ -52,6 +53,8 @@ let remote: object | undefined;
 const forceRestart = vi.fn();
 const dialog = () => container.querySelector('[role="alertdialog"]');
 const strip = () => container.querySelector('#strip')?.firstElementChild ?? null;
+const expand = () =>
+  strip()?.querySelector('button[title="Expand"]') as HTMLButtonElement | null | undefined;
 const buttonOf = (el: Element | null | undefined, text: string) =>
   [...(el?.querySelectorAll('button') ?? [])].find((b) => b.textContent === text) as
     | HTMLButtonElement
@@ -210,6 +213,8 @@ describe('RestartWaitDialog', () => {
     async (exit, text) => {
       await mount();
       await act(async () => push?.({ phase: 'waiting', reason: 'tool', exit }));
+      // 安装更新默认是小条，展开后是同一个弹层
+      if (exit === 'update') await act(async () => expand()?.click());
       const content = dialog()?.textContent ?? '';
       expect(content).toContain('Waiting for the current command to finish');
       expect(content).toContain(text);
@@ -274,10 +279,96 @@ describe('RestartWaitDialog', () => {
   it('小条上直接强制退出：通知 Main 且防重复点', async () => {
     await mount();
     await act(async () => push?.({ phase: 'waiting', reason: 'tool', exit: 'update' }));
-    await act(async () => buttonOf(dialog(), 'Minimize')?.click());
+    expect(dialog()).toBeNull();
     await act(async () => buttonOf(strip(), 'Force quit')?.click());
     expect(forceRestart).toHaveBeenCalledTimes(1);
     expect(buttonOf(strip(), 'Force quit')?.hasAttribute('disabled')).toBe(true);
+  });
+
+  it('安装更新进入等待：默认就是小条，不弹弹层；点展开看到会话列表和「强制退出」', async () => {
+    sessions.conversations = { 'sess-1': { title: '修登录' } };
+    await mount();
+    await act(async () =>
+      push?.({
+        phase: 'waiting',
+        reason: 'tool',
+        exit: 'update',
+        blockers: [{ sessionId: 'sess-1', kind: 'tool', tools: ['bash'] }],
+      })
+    );
+    expect(dialog()).toBeNull();
+    expect(strip()?.textContent).toContain(
+      'Installing the update once the current command finishes · waiting for 1 sessions'
+    );
+    expect(strip()?.querySelector('[role="status"]')).not.toBeNull();
+    await act(async () => expand()?.click());
+    expect(strip()).toBeNull();
+    expect(dialog()?.textContent).toContain('修登录 — Running bash');
+    expect(buttonOf(dialog(), 'Force quit')).toBeDefined();
+    expect(forceRestart).not.toHaveBeenCalled();
+  });
+
+  it('安装更新：展开后会话列表变化重推，保持展开；再收起后重推保持小条', async () => {
+    await mount();
+    await act(async () => push?.({ phase: 'waiting', reason: 'tool', exit: 'update' }));
+    await act(async () => expand()?.click());
+    await act(async () =>
+      push?.({
+        phase: 'waiting',
+        reason: 'reply',
+        exit: 'update',
+        blockers: [{ sessionId: 'aaaaaaaa', kind: 'reply' }],
+      })
+    );
+    expect(strip()).toBeNull();
+    expect(dialog()?.textContent).toContain('Waiting for the current reply to finish');
+    await act(async () => buttonOf(dialog(), 'Minimize')?.click());
+    await act(async () => push?.({ phase: 'waiting', reason: 'tool', exit: 'update' }));
+    expect(dialog()).toBeNull();
+    expect(strip()).not.toBeNull();
+  });
+
+  it('安装更新：小条状态下等完（Main 关弹层后去安装），小条消失、不闪出弹层；下次重启等待仍弹弹层', async () => {
+    await mount();
+    await act(async () => push?.({ phase: 'waiting', reason: 'tool', exit: 'update' }));
+    await act(async () => push?.(null));
+    expect(strip()).toBeNull();
+    expect(dialog()).toBeNull();
+    await act(async () => push?.({ phase: 'waiting', reason: 'tool', exit: 'restart' }));
+    expect(strip()).toBeNull();
+    expect(dialog()?.textContent).toContain('Waiting for the current command to finish');
+  });
+
+  it('启动时补取到安装更新的等待：同样是小条', async () => {
+    initial = { phase: 'waiting', reason: 'tool', exit: 'update' };
+    await mount();
+    expect(dialog()).toBeNull();
+    expect(strip()?.textContent).toContain(
+      'Installing the update once the current command finishes'
+    );
+  });
+
+  it('小条悬浮提示列出在等的会话', async () => {
+    sessions.conversations = { 'sess-1': { title: '修登录' } };
+    await mount();
+    await act(async () =>
+      push?.({
+        phase: 'waiting',
+        reason: 'tool',
+        exit: 'update',
+        blockers: [
+          { sessionId: 'sess-1', kind: 'tool', tools: ['bash'] },
+          { sessionId: 'sess-1::kid', kind: 'reply' },
+        ],
+      })
+    );
+    const label = buttonOf(
+      strip(),
+      'Installing the update once the current command finishes · waiting for 2 sessions'
+    );
+    expect(label?.getAttribute('title')).toBe(
+      '修登录 — Running bash\n修登录 — A subagent is writing a reply'
+    );
   });
 
   it('列出挡住退出的会话：标题和原因，没有标题时用 id 前 8 位，子会话注明子代理', async () => {
