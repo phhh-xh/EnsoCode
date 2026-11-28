@@ -119,6 +119,10 @@ export const CONFIG_SYNC_FIELD_POLICY = {
   },
   dropShelfEnabled: { mode: 'excluded', reason: 'macOS drop shelf is a device-local experiment' },
   secretaryEnabled: { mode: 'excluded', reason: 'secretary lives on this device' },
+  secretaryContextGenerationsEnabled: {
+    mode: 'excluded',
+    reason: 'experimental secretary context generations toggle; secretary lives on this device',
+  },
   botMaxRunningTurns: { mode: 'excluded', reason: 'device-local Bot concurrency limit' },
   botDiscussModeEnabled: {
     mode: 'excluded',

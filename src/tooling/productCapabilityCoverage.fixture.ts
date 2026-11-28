@@ -86,6 +86,9 @@ export const SETTINGS_DATA_COVERAGE = {
   secretaryEnabled: excluded(
     'Experimental secretary agent toggle; device-local, not an Enso capability.'
   ),
+  secretaryContextGenerationsEnabled: excluded(
+    'Experimental secretary context generations toggle; device-local, not an Enso capability.'
+  ),
   botMaxRunningTurns: excluded('Device-local Bot concurrency limit; not an Enso capability.'),
   botDiscussModeEnabled: excluded(
     'Experimental Bot group discussion toggle; device-local, not an Enso capability.'
@@ -298,6 +301,9 @@ export const SETTINGS_ACTION_COVERAGE = {
   setDropShelfEnabled: excluded('Experimental macOS drop shelf toggle; device-local window.'),
   setSecretaryEnabled: excluded(
     'Experimental secretary agent toggle; device-local, not an Enso capability.'
+  ),
+  setSecretaryContextGenerationsEnabled: excluded(
+    'Experimental secretary context generations toggle; device-local, not an Enso capability.'
   ),
   setBotRouteClassifier: excluded(
     'Bot group smart-routing model preference; not an Enso capability.'
@@ -776,6 +782,9 @@ export const IPC_PRODUCT_COVERAGE = {
   ),
   AGENT_PARENT_HISTORY_TAIL: excluded(
     'Read-only parent jsonl tail/page for cold-open UI; no spawn, no execution rights.'
+  ),
+  AGENT_PRIOR_GENERATION_PAGE: excluded(
+    'Read-only prior generation jsonl page for cross-generation UI timeline; path stays in Main.'
   ),
   AGENT_SUMMARIZE_TITLE: excluded(
     'Fire-and-forget conversation title summarization; single LLM completion, no execution rights.'

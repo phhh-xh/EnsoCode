@@ -117,10 +117,7 @@ export class SourceAuthorityRegistry {
   projection(): SourceAuthorityProjection {
     return {
       projects: [...this.projects.values()].map((value) => this.hydrateProject(value)),
-      conversations: [...this.conversations.values()].map((value) => ({
-        ...value,
-        ...(value.selection ? { selection: { ...value.selection } } : {}),
-      })),
+      conversations: [...this.conversations.values()].map((value) => this.copyConversation(value)),
     };
   }
 
@@ -146,9 +143,7 @@ export class SourceAuthorityRegistry {
 
   conversation(conversationId: string): ConversationAuthority | undefined {
     const value = this.conversations.get(conversationId);
-    return value
-      ? { ...value, ...(value.selection ? { selection: { ...value.selection } } : {}) }
-      : undefined;
+    return value ? this.copyConversation(value) : undefined;
   }
 
   createProject(
@@ -625,18 +620,52 @@ export class SourceAuthorityRegistry {
   ): void {
     const conversation = this.conversations.get(conversationId);
     if (!conversation || conversation.lifecycle === 'ended') return;
+    const sameModel =
+      conversation.selection?.providerId === model.providerId &&
+      conversation.selection?.modelId === model.modelId;
+    const sameFork =
+      !forkedFrom ||
+      (conversation.forkedFrom?.conversationId === forkedFrom.conversationId &&
+        conversation.forkedFrom?.entryId === forkedFrom.entryId);
+    // 幂等：相同 sessionFile 且元数据未变化时直接返回，不重复提交/入栈
+    if (
+      conversation.lifecycle === 'ready' &&
+      conversation.sessionFile === sessionFile &&
+      sameModel &&
+      sameFork
+    ) {
+      return;
+    }
     conversation.lifecycle = 'ready';
     conversation.sessionFile = sessionFile;
     if (forkedFrom) conversation.forkedFrom = { ...forkedFrom };
-    if (
-      !conversation.selection ||
-      conversation.selection.providerId !== model.providerId ||
-      conversation.selection.modelId !== model.modelId
-    ) {
+    if (!sameModel) {
       conversation.selection = { ...model, revision: (conversation.selection?.revision ?? 0) + 1 };
     }
     conversation.version += 1;
     this.commit();
+  }
+
+  /**
+   * 上下文换代：把当前 sessionFile 推入 previousSessionFiles（从旧到新），再切换到新文件。
+   * 幂等：新文件已经是当前 sessionFile 时什么都不做。
+   */
+  rotateSessionFile(conversationId: string, newSessionFile: string): boolean {
+    const conversation = this.conversations.get(conversationId);
+    if (!conversation || conversation.lifecycle === 'ended' || !newSessionFile) return false;
+    if (conversation.sessionFile === newSessionFile) return false;
+    const previous = conversation.previousSessionFiles
+      ? [...conversation.previousSessionFiles]
+      : [];
+    if (conversation.sessionFile && !previous.includes(conversation.sessionFile)) {
+      previous.push(conversation.sessionFile);
+    }
+    if (previous.length > 0) conversation.previousSessionFiles = previous;
+    conversation.lifecycle = 'ready';
+    conversation.sessionFile = newSessionFile;
+    conversation.version += 1;
+    this.commit();
+    return true;
   }
 
   private currentConversation(request: ConversationAuthorityRequest): ConversationAuthority | null {
@@ -654,6 +683,9 @@ export class SourceAuthorityRegistry {
   private copyConversation(value: ConversationAuthority): ConversationAuthorityProjection {
     return {
       ...value,
+      ...(value.previousSessionFiles
+        ? { previousSessionFiles: [...value.previousSessionFiles] }
+        : {}),
       ...(value.selection ? { selection: { ...value.selection } } : {}),
       ...(value.forkedFrom ? { forkedFrom: { ...value.forkedFrom } } : {}),
       ...(value.bot ? { bot: { ...value.bot } } : {}),
@@ -735,6 +767,15 @@ export class SourceAuthorityRegistry {
           this.projects.has(conversation.projectId) &&
           conversation.kind === 'root'
         ) {
+          if (conversation.previousSessionFiles !== undefined) {
+            const validPrev = Array.isArray(conversation.previousSessionFiles)
+              ? conversation.previousSessionFiles.filter(
+                  (item): item is string => typeof item === 'string' && item.length > 0
+                )
+              : [];
+            if (validPrev.length > 0) conversation.previousSessionFiles = validPrev;
+            else delete conversation.previousSessionFiles;
+          }
           this.conversations.set(conversation.conversationId, conversation);
         }
       }

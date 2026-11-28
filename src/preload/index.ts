@@ -169,6 +169,8 @@ import {
   type McpStatusEvent,
   type McpStatusPush,
   type ParentHistoryTailResult,
+  type PriorGenerationCursor,
+  type PriorGenerationPageResult,
   type ProjectAuthorityProjection,
   parseDispatchMainEvent,
   type RemoveProjectAuthorityRequest,
@@ -1537,6 +1539,11 @@ const electronAPI = {
       beforeIndex?: number
     ): Promise<ParentHistoryTailResult> =>
       ipcRenderer.invoke(IPC_CHANNELS.AGENT_PARENT_HISTORY_TAIL, { conversationId, beforeIndex }),
+    loadPriorGenerationPage: (
+      conversationId: string,
+      cursor: PriorGenerationCursor
+    ): Promise<PriorGenerationPageResult> =>
+      ipcRenderer.invoke(IPC_CHANNELS.AGENT_PRIOR_GENERATION_PAGE, { conversationId, cursor }),
     /** 标题总结：只传 id + 输入（首条即时 / 每轮滚动，+会话模型作回退链末级），凭证由 Main 自读；结果经 title-generated 事件回流 */
     summarizeTitle: (
       conversationId: string,

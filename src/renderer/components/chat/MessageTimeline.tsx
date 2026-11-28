@@ -185,7 +185,7 @@ interface MessageTimelineProps {
   /** 还有更早一页；false = 已到第 0 条，顶部给出到头提示 */
   hasOlder?: boolean;
   /** 翻页游标（已加载的最早绝对下标）：变化即新页已落地 */
-  olderCursor?: number;
+  olderCursor?: string | number;
   searchQuery?: string;
   activeHit?: { key: string; nth: number } | null;
   /**

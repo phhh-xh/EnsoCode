@@ -1,8 +1,17 @@
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { app, ipcMain } from '@platform';
+import {
+  type BriefRuleMemory,
+  type BriefTurnMessage,
+  buildGenerationBrief,
+  SECRETARY_BRIEF_RULES_MAX_COUNT,
+} from '@shared/secretary/brief';
 import { proposalCardTitle } from '@shared/secretary/contact';
+import { dayKey } from '@shared/secretary/daily';
 import { parseFeedQuery } from '@shared/secretary/feed';
+import { SECRETARY_FLUSH_PROMPT } from '@shared/secretary/generation';
+import { readableText } from '@shared/secretary/transcript';
 import type { AttachedImage } from '@shared/types/agent';
 import { IPC_CHANNELS } from '@shared/types/ipc';
 import type { SecretarySkillView, SecretaryState, SecretarySummary } from '@shared/types/secretary';
@@ -14,6 +23,9 @@ import { notifyDesktop } from '../services/desktopHooks';
 import { getEventClaimStore } from '../services/eventClaims';
 import { interruptedTurnReason } from '../services/interruptedTurns';
 import { setSecretaryAvatarResolver } from '../services/localImageProtocol';
+import { redactSecrets } from '../services/memory/distill';
+import { GLOBAL_SPACE, projectSpaceId } from '../services/memory/types';
+import { memoryServiceOp } from '../services/memoryHost';
 import { readStoredOauthCredentialKeys } from '../services/oauthProviders';
 import { setRemoteSecretaryIdProvider } from '../services/remoteRenderer';
 import { onConversationsMerged } from '../services/remoteRenderer/conversationSync';
@@ -22,7 +34,7 @@ import { appendAudit } from '../services/secretary/audit';
 import { managerOfSync } from '../services/secretary/crossSecretary';
 import { secretaryToolFor } from '../services/secretary/customTools';
 import { buildDaily, dailyPortsFor, parseDailyRequest } from '../services/secretary/daily';
-import { appendDailyRecord } from '../services/secretary/dailyLog';
+import { appendDailyRecord, readDailyRecords } from '../services/secretary/dailyLog';
 import { mainSessionDefaultsFor } from '../services/secretary/defaults';
 import { resolveTarget } from '../services/secretary/deliveries';
 import {
@@ -54,7 +66,10 @@ import {
   type DispatchDriverPorts,
   type GoalAction,
 } from '../services/secretary/driver';
-import { secretaryEnabled } from '../services/secretary/enabled';
+import {
+  secretaryContextGenerationsEnabled,
+  secretaryEnabled,
+} from '../services/secretary/enabled';
 import { verifyDispatchedGoalResult } from '../services/secretary/goalResultVerify';
 import {
   ensureHomeConversation,
@@ -135,12 +150,15 @@ import {
   isRootSessionAlive,
   observedBackgroundTasks,
   observedOwnSessionStatus,
+  observedSessionMeta,
   observedSessionStatus,
   observedSubagentsRunning,
   promptRootFromMain,
+  readSessionHistoryFile,
   releaseRootFromMain,
   resumeRootFromMain,
   rootImageInput,
+  rotateRootFromMain,
   setSecretaryDriverObserver,
   setUpstreamSessionWakeHandler,
   spawnRootFromMain,
@@ -492,6 +510,144 @@ function hostPortsFor(
       void getSecretaryReportStore()?.archive(conversationId, at, text, extra),
     verifyGoalResult: (conversationId, result) =>
       verifyDispatchedGoalResult(conversationId, result),
+    generation: {
+      enabled: () => secretaryContextGenerationsEnabled(),
+      state: () => store().generationState(),
+      saveState: (next) => {
+        store().saveGenerationState(next);
+      },
+      occupancy: (conversationId) => {
+        const meta = observedSessionMeta(conversationId);
+        const used = meta?.occupancy?.used;
+        if (typeof used !== 'number' || !Number.isFinite(used)) return null;
+        return {
+          used,
+          ...(meta?.contextWindow !== undefined ? { contextWindow: meta.contextWindow } : {}),
+        };
+      },
+      sendFlush: (conversationId, deliveryId) =>
+        promptRootFromMain(
+          conversationId,
+          SECRETARY_FLUSH_PROMPT,
+          deliveryId,
+          undefined,
+          undefined,
+          true
+        ),
+      buildBrief: async (conversationId, now) => {
+        const currentStore = store();
+        const file = currentStore.dispatchView();
+        const rows = readPersistedConversations();
+        const authority = getSourceAuthorityRegistry();
+        const aliases = projectAliasesFromSettings(readSettings());
+        const projectNameOf = (projectId: string | undefined): string | undefined => {
+          if (!projectId) return undefined;
+          if (aliases[projectId]) return aliases[projectId];
+          const project = authority?.project(projectId);
+          return project ? path.basename(project.canonicalPath) : undefined;
+        };
+
+        const todos = currentStore
+          .todos()
+          .filter((todo) => todo.doneAt === undefined)
+          .map((todo) => ({
+            id: todo.id,
+            text: redactSecrets(todo.text),
+            status: todo.problem ? 'problem' : todo.conversationId ? 'active' : 'todo',
+            ...(projectNameOf(todo.projectId)
+              ? { projectName: projectNameOf(todo.projectId) }
+              : {}),
+            ...(todo.dueAt !== undefined ? { dueAt: todo.dueAt } : {}),
+          }));
+
+        const dispatches = Object.values(file.dispatched)
+          .filter((record) => record.lastState === 'running' || record.lastState === 'waiting')
+          .map((record) => {
+            const row = rows[record.conversationId];
+            const title =
+              typeof row?.title === 'string' && row.title.trim()
+                ? redactSecrets(row.title)
+                : record.conversationId;
+            const goal =
+              row?.goal && typeof (row.goal as { text?: unknown }).text === 'string'
+                ? redactSecrets(String((row.goal as { text: string }).text))
+                : undefined;
+            return {
+              conversationId: record.conversationId,
+              title,
+              ...(projectNameOf(record.projectId)
+                ? { projectName: projectNameOf(record.projectId) }
+                : {}),
+              state: record.lastState,
+              ...(goal ? { goal } : {}),
+              ...(record.lastText ? { lastText: redactSecrets(record.lastText) } : {}),
+            };
+          });
+
+        const schedules = currentStore.schedules().map((item) => ({
+          id: item.id,
+          name: redactSecrets(item.name),
+          spec: item.cron ?? `at:${item.at}`,
+        }));
+
+        const today = dayKey(now);
+        const daily = readDailyRecords(ctx.dir)
+          .filter((record) => dayKey(record.at) === today)
+          .map((record) => ({
+            at: record.at,
+            kind: record.kind,
+            title: redactSecrets(record.title ?? record.conversationId),
+            ...(record.text ? { summary: redactSecrets(record.text) } : {}),
+          }));
+
+        const conv = authority?.conversation(conversationId);
+        const tail = await readSessionHistoryFile(conv?.sessionFile);
+        const recentMessages: BriefTurnMessage[] = tail.ok
+          ? tail.messages.flatMap((message) => {
+              if (message.role !== 'user' && message.role !== 'assistant') return [];
+              const text = readableText(message);
+              return text ? [{ role: message.role, text: redactSecrets(text) }] : [];
+            })
+          : [];
+
+        const spaceIds = [...(ctx.projectId ? [projectSpaceId(ctx.projectId)] : []), GLOBAL_SPACE];
+        let rules: BriefRuleMemory[] = [];
+        try {
+          const listed = await memoryServiceOp('list-rules', {
+            spaceIds,
+            unitTypes: ['preference', 'learning'],
+            limit: SECRETARY_BRIEF_RULES_MAX_COUNT,
+          });
+          if (Array.isArray(listed)) {
+            rules = listed
+              .filter(
+                (item): item is BriefRuleMemory =>
+                  Boolean(item) &&
+                  typeof item === 'object' &&
+                  typeof (item as BriefRuleMemory).content === 'string'
+              )
+              .map((item) => ({
+                ...item,
+                ...(item.title ? { title: redactSecrets(item.title) } : {}),
+                content: redactSecrets(item.content),
+              }));
+          }
+        } catch {
+          // 记忆库未就绪时不阻断换代简报生成
+        }
+
+        return buildGenerationBrief({
+          snapshotAt: now,
+          todos,
+          dispatches,
+          schedules,
+          daily,
+          recentMessages,
+          rules,
+        });
+      },
+      rotate: (conversationId, brief) => rotateRootFromMain(conversationId, brief),
+    },
   };
 }
 

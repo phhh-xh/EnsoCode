@@ -9,6 +9,8 @@ export interface RemoveConversationSessionFilesOptions {
   sessionDir: string;
   conversationId: string;
   sessionFile?: string;
+  /** 换代保留下来的旧代 jsonl 路径列表；同样必须在 sessionDir 内才删 */
+  previousSessionFiles?: readonly string[];
   /** scratch 会话的根目录；只删除其中 `<id>` 这一层，非法 id 或越界不删 */
   scratchRoot?: string;
   /** 系统 Temp 目录（默认 os.tmpdir()）；只删其下 `enso/<id>` 会话临时目录 */
@@ -17,7 +19,7 @@ export interface RemoveConversationSessionFilesOptions {
 
 /**
  * 删除会话时连带清理磁盘上的 jsonl:
- * - 父会话文件(registry 的 sessionFile,pi SessionManager 命名)
+ * - 父会话文件(registry 的 sessionFile 与 previousSessionFiles,pi SessionManager 命名)
  * - coworker safe journal(`enso-<conversationId>__cw-*`,见 ensoSafeJournal 的命名规则:
  *   child sessionId `<parent>::cw-<id>` 经 sanitize 后 `::` → `__`)
  *
@@ -28,8 +30,12 @@ export function removeConversationSessionFiles(
   options: RemoveConversationSessionFilesOptions
 ): void {
   const root = path.resolve(options.sessionDir);
-  if (options.sessionFile) {
-    const resolved = path.resolve(options.sessionFile);
+  const filesToRemove = [
+    ...(options.sessionFile ? [options.sessionFile] : []),
+    ...(options.previousSessionFiles ?? []),
+  ];
+  for (const candidate of filesToRemove) {
+    const resolved = path.resolve(candidate);
     if (resolved.startsWith(`${root}${path.sep}`)) {
       try {
         rmSync(resolved, { force: true });

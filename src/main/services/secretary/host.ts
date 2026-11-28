@@ -5,6 +5,12 @@ import { hasPendingReminder, type SessionReminder } from '@shared/reminders';
 import { shouldForwardMilestone } from '@shared/secretary/contact';
 import { extractReportRefs } from '@shared/secretary/daily';
 import {
+  nextGenerationStep,
+  type SecretaryGenerationAction,
+  type SecretaryGenerationEvent,
+  type SecretaryGenerationState,
+} from '@shared/secretary/generation';
+import {
   type GoalResult,
   type GoalResultCheck,
   type GoalResultView,
@@ -24,6 +30,7 @@ import { transitionProposal } from '@shared/secretary/policy';
 import { queuedStartOf } from '@shared/secretary/queuedSession';
 import {
   isPureSessionUpdate,
+  isSecretaryFlushText,
   messageText,
   sessionIdsInUpdates,
   shouldSilenceTurn,
@@ -131,8 +138,20 @@ const DAILY_KINDS: ReadonlySet<SecretaryResultKind> = new Set([
   'interrupted',
 ]);
 
+export interface SecretaryGenerationPorts {
+  /** 实验开关：关闭时停止触发新换代，已在途的 rotating 取消并恢复 outbox */
+  enabled(): boolean;
+  state(): SecretaryGenerationState;
+  saveState(state: SecretaryGenerationState): void;
+  occupancy(conversationId: string): { used: number; contextWindow?: number } | null;
+  sendFlush(conversationId: string, deliveryId: string): { ok: boolean; error?: string };
+  buildBrief(conversationId: string, now: number): Promise<string>;
+  rotate(conversationId: string, brief: string): Promise<{ ok: boolean; error?: string }>;
+}
+
 export interface SecretaryHostPorts extends DeliveryPorts {
   enabled(): boolean;
+  generation?: SecretaryGenerationPorts;
   profile(): SecretaryProfile | null;
   todos(): SecretaryTodo[];
   saveTodos(todos: SecretaryTodo[]): void;
@@ -897,7 +916,89 @@ export function createSecretaryHost(ports: SecretaryHostPorts): SecretaryHost {
     return true;
   }
 
+  /** 正在执行静默 flush 的秘书会话：屏蔽手机 typing、工具进度和任何回复，不依赖 status:idle 前的 lastUserText */
+  const flushTurns = new Set<string>();
+  /** 换代控制器暂停 outbox 期间（flushing / rotating）不投递新批次 */
+  let outboxPaused = false;
+  let rotateInFlight = false;
+
+  function applyGenerationActions(
+    conversationId: string,
+    state: SecretaryGenerationState,
+    actions: readonly SecretaryGenerationAction[],
+    now: number
+  ): void {
+    const gen = ports.generation;
+    if (!gen) return;
+    for (const action of actions) {
+      if (action === 'pauseOutbox') {
+        outboxPaused = true;
+      } else if (action === 'resumeOutbox') {
+        outboxPaused = false;
+        flushTurns.delete(conversationId);
+        flush(now);
+      } else if (action === 'sendFlush') {
+        const deliveryId = ports.newId();
+        const nextState: SecretaryGenerationState = {
+          ...state,
+          flushDeliveryId: deliveryId,
+          flushStarted: false,
+        };
+        gen.saveState(nextState);
+        flushTurns.add(conversationId);
+        const sent = gen.sendFlush(conversationId, deliveryId);
+        if (!sent.ok) {
+          stepGeneration(conversationId, {
+            type: 'flushRejected',
+            deliveryId,
+            busy: sent.error === 'busy',
+            now,
+          });
+        }
+      } else if (action === 'sendRotate') {
+        if (rotateInFlight) continue;
+        rotateInFlight = true;
+        void (async () => {
+          try {
+            if (!gen.enabled()) {
+              stepGeneration(conversationId, { type: 'disabled', now: ports.now() });
+              return;
+            }
+            const brief = await gen.buildBrief(conversationId, ports.now());
+            if (!gen.enabled()) {
+              stepGeneration(conversationId, { type: 'disabled', now: ports.now() });
+              return;
+            }
+            const result = await gen.rotate(conversationId, brief);
+            const status = result.ok ? 'ok' : result.error === 'busy' ? 'busy' : 'error';
+            stepGeneration(conversationId, { type: 'rotateResult', status, now: ports.now() });
+          } catch {
+            stepGeneration(conversationId, {
+              type: 'rotateResult',
+              status: 'error',
+              now: ports.now(),
+            });
+          } finally {
+            rotateInFlight = false;
+          }
+        })();
+      }
+    }
+  }
+
+  function stepGeneration(conversationId: string, event: SecretaryGenerationEvent): void {
+    const gen = ports.generation;
+    if (!gen) return;
+    const current = gen.state();
+    const { state: next, actions } = nextGenerationStep(current, event);
+    if (next !== current) gen.saveState(next);
+    outboxPaused = next.phase !== 'idle';
+    const now = 'now' in event ? event.now : ports.now();
+    applyGenerationActions(conversationId, next, actions, now);
+  }
+
   function flush(now: number): void {
+    if (outboxPaused) return;
     void flushDeliveries(ports, now).catch((error: unknown) => {
       console.warn(
         '[secretary] delivery failed:',
@@ -1026,8 +1127,16 @@ export function createSecretaryHost(ports: SecretaryHostPorts): SecretaryHost {
     if (!contact) return;
     if (event.type === 'message-upsert') {
       if (event.message.role === 'user') {
-        lastUserText.set(conversationId, messageText(event.message));
+        const text = messageText(event.message);
+        lastUserText.set(conversationId, text);
+        if (isSecretaryFlushText(text)) flushTurns.add(conversationId);
+        else if (flushTurns.has(conversationId) && !isPureSessionUpdate(text)) {
+          // flush 跑着时用户的话会排进同一轮（followUp）：这一轮从此是在回用户，照常同步到手机
+          flushTurns.delete(conversationId);
+          contact.onTurnStart(conversationId);
+        }
       }
+      if (flushTurns.has(conversationId)) return;
       if (event.message.role === 'assistant' && contact.onToolCall) {
         let seen = seenToolCalls.get(conversationId);
         for (const part of event.message.content) {
@@ -1052,6 +1161,7 @@ export function createSecretaryHost(ports: SecretaryHostPorts): SecretaryHost {
         contact.onTurnEnd(conversationId);
         return;
       }
+      if (flushTurns.has(conversationId)) return;
       // 静默只可能来自纯系统回传（silence_turn / 静默标记都要求这一条），不发 typing
       if (!isPureSessionUpdate(lastUserText.get(conversationId) ?? '')) {
         contact.onTurnStart(conversationId);
@@ -1070,8 +1180,17 @@ export function createSecretaryHost(ports: SecretaryHostPorts): SecretaryHost {
       });
       return;
     }
+    if (event.type === 'turn-failed') {
+      flushTurns.delete(conversationId);
+      return;
+    }
     // 审批卡不在这里：所有会话（含秘书会话）都由远程审批桥统一发到手机
-    if (event.type !== 'turn-completed' || event.aborted) return;
+    if (event.type !== 'turn-completed') return;
+    if (flushTurns.delete(conversationId)) {
+      contact.onTurnSilent(conversationId);
+      return;
+    }
+    if (event.aborted) return;
     if (event.silent) {
       // 静默回合就是不打扰：手机上一条都不发，只收掉「正在输入…」等未决状态
       contact.onTurnSilent(conversationId);
@@ -1293,6 +1412,49 @@ export function createSecretaryHost(ports: SecretaryHostPorts): SecretaryHost {
       if (inflight && touched.has(inflight.secretaryConversationId)) {
         const outcome = deliveryOutcome(event, inflight);
         if (outcome) settleDelivery(ports, inflight.secretaryConversationId, outcome, now);
+      }
+
+      // 换代控制器：插在结算上一批投递之后、下一批 flushDeliveries 之前
+      if (sessionId && ports.generation && ports.isSecretaryConversation?.(sessionId)) {
+        const gen = ports.generation;
+        const currentGen = gen.state();
+        outboxPaused = currentGen.phase !== 'idle';
+        if (event.type === 'delivery-settled') {
+          stepGeneration(sessionId, { type: 'flushStarted', deliveryId: event.deliveryId });
+        } else if (event.type === 'delivery-rejected') {
+          stepGeneration(sessionId, {
+            type: 'flushRejected',
+            deliveryId: event.deliveryId,
+            busy: event.reason === 'busy',
+            now,
+          });
+        } else if (event.type === 'turn-completed' || event.type === 'turn-failed') {
+          const latestGen = gen.state();
+          if (latestGen.phase === 'flushing') {
+            // 仅当 flush 已确认启动（或没有绑定 deliveryId）时才认领此终态，防误认抢跑用户轮
+            if (latestGen.flushStarted || !latestGen.flushDeliveryId) {
+              stepGeneration(sessionId, {
+                type: 'flushEnded',
+                ok: event.type === 'turn-completed' && !event.aborted,
+                enabled: gen.enabled(),
+                now,
+              });
+            }
+          } else if (latestGen.phase === 'idle') {
+            const occ = gen.occupancy(sessionId);
+            const stillInDelivery = Boolean((ports.peekFile?.() ?? ports.file()).inflight);
+            stepGeneration(sessionId, {
+              type: 'turnEnded',
+              enabled: gen.enabled(),
+              aborted: event.type === 'turn-completed' && event.aborted === true,
+              failed: event.type === 'turn-failed',
+              inDelivery: stillInDelivery,
+              occupancyUsed: occ?.used ?? 0,
+              contextWindow: occ?.contextWindow,
+              now,
+            });
+          }
+        }
       }
 
       const file = withEventStamps(ports.file());
@@ -1589,6 +1751,17 @@ export function createSecretaryHost(ports: SecretaryHostPorts): SecretaryHost {
 
     tick(now = ports.now()) {
       if (!ports.enabled()) return;
+      // 换代状态崩溃/卡死恢复（超 10 分钟视为失败回到 idle）+ 关闭开关收口
+      if (ports.generation) {
+        const genState = ports.generation.state();
+        if (genState.phase !== 'idle') {
+          if (!ports.generation.enabled()) {
+            stepGeneration('', { type: 'disabled', now });
+          } else {
+            stepGeneration('', { type: 'crashRecovered', now });
+          }
+        }
+      }
       const file = withEventStamps(ports.file());
       const records = Object.values(file.dispatched);
       const statuses: Record<string, SecretarySessionStatus> = {};

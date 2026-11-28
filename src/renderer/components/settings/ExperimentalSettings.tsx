@@ -14,6 +14,12 @@ export function ExperimentalSettings({ onOpenBots }: { onOpenBots: () => void })
   const setDropShelfEnabled = useSettingsStore((s) => s.setDropShelfEnabled);
   const secretaryEnabled = useSettingsStore((s) => s.secretaryEnabled);
   const setSecretaryEnabled = useSettingsStore((s) => s.setSecretaryEnabled);
+  const secretaryContextGenerationsEnabled = useSettingsStore(
+    (s) => s.secretaryContextGenerationsEnabled
+  );
+  const setSecretaryContextGenerationsEnabled = useSettingsStore(
+    (s) => s.setSecretaryContextGenerationsEnabled
+  );
   const isMac = window.electronAPI.env.platform === 'darwin' && !window.electronAPI.remote;
   return (
     <SettingsPage
@@ -70,6 +76,20 @@ export function ExperimentalSettings({ onOpenBots }: { onOpenBots: () => void })
         >
           <SettingsSwitch checked={secretaryEnabled} onCheckedChange={setSecretaryEnabled} />
         </SettingsRow>
+        {secretaryEnabled && (
+          <SettingsRow
+            rowId="experimental.secretaryContextGenerations"
+            label={t('Context generations')}
+            description={t(
+              'Start a fresh context file with a brief when the secretary conversation grows large, keeping a continuous timeline across generations. Turn off to fall back to standard compaction; existing history remains readable.'
+            )}
+          >
+            <SettingsSwitch
+              checked={secretaryContextGenerationsEnabled}
+              onCheckedChange={setSecretaryContextGenerationsEnabled}
+            />
+          </SettingsRow>
+        )}
       </SettingsSection>
     </SettingsPage>
   );

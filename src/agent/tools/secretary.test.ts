@@ -136,6 +136,10 @@ describe('secretary tools', () => {
         limit: 5,
       }
     );
+    expect(normalizeSecretaryParams('history_search', { keyword: '  阈值  ', max: '4' })).toEqual({
+      query: '阈值',
+      limit: 4,
+    });
     expect(normalizeSecretaryParams('session_send', { conversationId: 'c1', text: 'hi' })).toEqual({
       conversationId: 'c1',
       message: 'hi',

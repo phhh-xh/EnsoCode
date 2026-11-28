@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import {
   Agent,
@@ -94,6 +94,7 @@ import {
 import { looksLikeRefusal } from '@shared/refusalRetry';
 import { REMINDER_MAX_DELAY_MS, REMINDERS_FILE, toReminderSummary } from '@shared/reminders';
 import type { RequestBodyUsage } from '@shared/requestBodyUsage';
+import { SECRETARY_BRIEF_CUSTOM_TYPE } from '@shared/secretary/generation';
 import { turnCalledSilenceTurn, turnRequestedSilence } from '@shared/secretary/silence';
 import { isSecretaryToolAllowed, type SecretaryInvokeOp } from '@shared/secretary/tools';
 import { computeStats, toUsageTotals } from '@shared/sessionStats';
@@ -265,7 +266,12 @@ import {
 import { readHarnessRuleFiles, resolveHarnessSkillRoots } from './harnessAssets';
 import { type ContextMessage, sanitizeContextMessages } from './imageContext';
 import { localReadOperations } from './localReadOperations';
-import { installLongCacheRetention } from './longCacheRetention';
+import {
+  installLongCacheRetention,
+  isSecretaryCacheSession,
+  registerSecretaryCacheSession,
+  unregisterSecretaryCacheSession,
+} from './longCacheRetention';
 import { McpManager } from './mcp';
 import { partitionMcpNamespaces } from './mcpNames';
 import { MCP_SERVER_REGISTRY_DIR } from './mcpStdio';
@@ -1666,6 +1672,7 @@ export class SessionSupervisor {
     managed.unsubscribe();
     try {
       releaseOauthPoolSession(managed.session.sessionId);
+      unregisterSecretaryCacheSession(managed.session.sessionId);
       managed.session.dispose();
     } catch {}
     this.sessions.delete(parentId);
@@ -2308,6 +2315,16 @@ export class SessionSupervisor {
       }
       case 'prompt': {
         const managed = this.must(command.identity);
+        if (
+          command.rejectWhenBusy &&
+          (managed.status === 'running' ||
+            managed.session.isStreaming ||
+            managed.session.isRetrying ||
+            managed.session.isCompacting)
+        ) {
+          this.emitDeliveryRejected(managed, command.deliveryId, 'busy');
+          return;
+        }
         if (command.ownerInput) this.noteOwnerInput(managed, command.deliveryId, command.text);
         managed.plan?.supersede();
         // 非提醒来源的输入：提醒连续链从头算
@@ -2727,6 +2744,10 @@ export class SessionSupervisor {
           return;
         }
         await this.runCompaction(managed, command.instructions);
+        return;
+      }
+      case 'rotate-session': {
+        this.handleRotateSession(command);
         return;
       }
       case 'rewind': {
@@ -3982,7 +4003,11 @@ export class SessionSupervisor {
         : SessionManager.create(cwd, this.options.sessionDir),
     });
     ownerGate.syncFromMessages(session.messages);
-    installLongCacheRetention(session.agent, this.isLongCacheRetention);
+    if (secretaryMode) registerSecretaryCacheSession(session.sessionId);
+    installLongCacheRetention(
+      session.agent,
+      secretaryMode ? () => true : this.isLongCacheRetention
+    );
     const codemodeTools = codemodeHost.activeToolNames();
     const cursorBridge = isCursorModel(piModel)
       ? attachCursorBridgeToSession(
@@ -5982,6 +6007,95 @@ export class SessionSupervisor {
     });
   }
 
+  /**
+   * 秘书就地换代：不销毁会话、不发 parent-ended，在同一进程与 generation 内切换新 sessionFile。
+   * 运行中直接返回 busy；成功后立即把 header + 隐藏简报落盘并同步 pi 内部 flushed 标志，
+   * 避免下一条真实 user 消息触发 openSync(..., 'wx') 报 EEXIST。
+   */
+  private handleRotateSession(command: Extract<AgentCommand, { type: 'rotate-session' }>): void {
+    const managed = this.sessions.get(command.identity.sessionId);
+    if (
+      !managed ||
+      !isSameGeneration(managed.identity, command.identity) ||
+      managed.status === 'running' ||
+      managed.session.isStreaming ||
+      managed.session.isRetrying ||
+      managed.session.isCompacting
+    ) {
+      this.options.emit({
+        type: 'rotate-session-result',
+        identity: command.identity,
+        requestId: command.requestId,
+        ok: false,
+        error: 'busy',
+      });
+      return;
+    }
+
+    const oldSessionId = managed.session.sessionId;
+    const oldSessionFile = managed.session.sessionFile;
+    const at = Date.now();
+    try {
+      const manager = managed.session.sessionManager;
+      const newSessionFile = manager.newSession({
+        ...(oldSessionFile ? { parentSession: oldSessionFile } : {}),
+      });
+      if (!newSessionFile) {
+        throw new Error('SessionManager.newSession did not return a session file.');
+      }
+      manager.appendCustomMessageEntry(SECRETARY_BRIEF_CUSTOM_TYPE, command.brief, false);
+      flushRotatedSessionFile(manager, newSessionFile);
+
+      // 同步重置 pi agent 内存消息为含简报的新上下文
+      const nextContext = manager.buildSessionContext();
+      managed.session.agent.state.messages = [...nextContext.messages];
+
+      // 同步清理所有旧代运行时投影与缓存状态
+      managed.messages = [];
+      managed.timings = [];
+      managed.turnStartIndex = 0;
+      managed.contextUsage = new UsageTracker();
+      managed.compaction = undefined;
+      managed.compactionNoticeAt = undefined;
+      managed.customEntries = [];
+      managed.forkBase = undefined;
+      managed.pendingPrivacyMask = undefined;
+      managed.requestBody = undefined;
+
+      // 释放旧 sessionId 的 OAuth 粘性与 1h 缓存集合，登记新 sessionId
+      releaseOauthPoolSession(oldSessionId);
+      unregisterSecretaryCacheSession(oldSessionId);
+      registerSecretaryCacheSession(managed.session.sessionId);
+
+      this.emitSessionMeta(managed);
+      this.options.emit({
+        type: 'session-rotated',
+        identity: managed.identity,
+        seq: ++managed.seq,
+        sessionFile: newSessionFile,
+        ...(oldSessionFile ? { previousSessionFile: oldSessionFile } : {}),
+        at,
+      });
+      this.options.emit({
+        type: 'rotate-session-result',
+        identity: managed.identity,
+        requestId: command.requestId,
+        ok: true,
+        sessionFile: newSessionFile,
+        ...(oldSessionFile ? { previousSessionFile: oldSessionFile } : {}),
+        at,
+      });
+    } catch (error) {
+      this.options.emit({
+        type: 'rotate-session-result',
+        identity: command.identity,
+        requestId: command.requestId,
+        ok: false,
+        error: toErrorMessage(error),
+      });
+    }
+  }
+
   /** 纯回退是严格前缀：先裁投影，UI 不必等 navigateTree / 文件还原。 */
   private truncateProjectionForRewind(managed: ManagedSession, anchor: string | number): void {
     if (typeof anchor === 'number' && (!Number.isInteger(anchor) || anchor < 0)) return;
@@ -6157,7 +6271,7 @@ export class SessionSupervisor {
   private emitDeliveryRejected(
     managed: ManagedSession,
     deliveryId?: string,
-    reason?: 'turn-stuck'
+    reason?: 'turn-stuck' | 'busy'
   ): void {
     if (!deliveryId) return;
     managed.ownerDeliveries?.delete(deliveryId);
@@ -7049,7 +7163,10 @@ export class SessionSupervisor {
       installOauthPoolSelector(runtime, this.selectOauthPool);
       installStreamGuard(runtime);
       installStableToolOrder(runtime);
-      installLongCacheRetention(runtime, this.isLongCacheRetention);
+      installLongCacheRetention(
+        runtime,
+        (options) => this.isLongCacheRetention() || isSecretaryCacheSession(options?.sessionId)
+      );
       return runtime;
     })();
     return this.runtimePromise;
@@ -7674,6 +7791,26 @@ function stillQueued<T extends { text: string }>(
 
 /** 回复里的可见正文，不含 thinking 与工具调用 */
 /** 会话最近一次请求还对得上当前模型时才能分叉；换过模型就前缀不同，退回快照 */
+/**
+ * 将刚 newSession + appendCustomMessageEntry 后的 header 与简报立即落盘，
+ * 并同步 pi SessionManager 的 flushed 标记，确保首条 user 消息走追加而非 wx 独占创建。
+ */
+export function flushRotatedSessionFile(manager: unknown, sessionFile: string): void {
+  const internal = manager as {
+    _rewriteFile?: () => void;
+    fileEntries?: readonly unknown[];
+    flushed?: boolean;
+  };
+  if (typeof internal._rewriteFile === 'function') {
+    internal._rewriteFile();
+  } else if (Array.isArray(internal.fileEntries)) {
+    mkdirSync(path.dirname(sessionFile), { recursive: true });
+    const content = internal.fileEntries.map((entry) => `${JSON.stringify(entry)}\n`).join('');
+    writeFileSync(sessionFile, content, 'utf8');
+  }
+  internal.flushed = true;
+}
+
 function forkBaseOf(parent: ManagedSession): ForkBase | undefined {
   const base = parent.forkBase;
   const model = parent.session.model;

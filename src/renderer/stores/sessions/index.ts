@@ -93,6 +93,7 @@ import { startQueuedSession } from '@/lib/queuedSessionApi';
 import { isLeaderRenderer, onLeaderRendererChanged } from '@/lib/rendererRole';
 import {
   noteSourceAuthorityProjection,
+  peekSourceAuthority,
   readSharedSourceAuthority,
 } from '@/lib/sourceAuthorityCache';
 import { readMaterializedProviders } from '@/stores/modelDirectory/useProviders';
@@ -148,6 +149,7 @@ import {
   emptyProjection,
   isVisibleGenerationOutput,
   joinsMidStream,
+  prependPriorGenerationPage,
   rewindTruncatedNeedsSnapshotResync,
   type SessionProjection,
   type TimelineMessage,
@@ -2003,6 +2005,10 @@ export const useSessionsStore = create<SessionsState>()(
           return;
         }
 
+        // 换代：本地挪进旧代的只是已加载的那一截（可能缺开头、游标还是旧的），set 落地后按权威记录重取
+        if (event.type === 'session-rotated') {
+          queueMicrotask(() => void ensurePriorGenerations(id, true));
+        }
         set((state) => {
           const conversation = state.conversations[id];
           if (!conversation) return state;
@@ -2077,6 +2083,14 @@ export const useSessionsStore = create<SessionsState>()(
                   lastModelId: event.model.modelId,
                 }
               : {}),
+            ...(event.type === 'session-rotated'
+              ? {
+                  sessionFile: event.sessionFile,
+                  compaction: undefined,
+                  compactionNoticeAt: undefined,
+                  occupancy: undefined,
+                }
+              : {}),
             ...(event.type === 'child-ready'
               ? {
                   started: true,
@@ -2097,10 +2111,13 @@ export const useSessionsStore = create<SessionsState>()(
               MESSAGE_CACHE_TTL_MS,
               hotSessionIds(state.conversations)
             ) &&
-            (next.messages.length > 0 || next.customEntries.length > 0)
+            (next.messages.length > 0 ||
+              next.customEntries.length > 0 ||
+              Boolean(next.priorGenerations))
               ? {
                   messages: [],
                   customEntries: [],
+                  priorGenerations: undefined,
                   lastActiveAt: bodyLastActiveAt(next.messages, conversation.lastActiveAt),
                   historyBaseIndex: undefined,
                   historyLoading: undefined,
@@ -3903,28 +3920,68 @@ export const useSessionsStore = create<SessionsState>()(
         async loadOlderHistory(id) {
           if (olderHistoryInFlight.has(id)) return;
           const conversation = get().conversations[id];
-          const beforeIndex = conversation?.historyBaseIndex;
-          if (!conversation || conversation.parentId || !beforeIndex || beforeIndex <= 0) return;
-          const read = window.electronAPI.agent.readParentHistoryTail;
-          if (!read) return;
+          if (!conversation || conversation.parentId) return;
+          const beforeIndex = conversation.historyBaseIndex;
+          const priorCursor = conversation.priorGenerations?.cursor ?? null;
+
+          // 优先在当前代内向上翻页
+          if (beforeIndex && beforeIndex > 0) {
+            const read = window.electronAPI.agent.readParentHistoryTail;
+            if (!read) return;
+            olderHistoryInFlight.add(id);
+            set((state) => patch(state, id, { historyLoading: true }));
+            try {
+              const result = await read(id, beforeIndex);
+              if (!result.ok || result.messages.length === 0) return;
+              const latest = get().conversations[id];
+              if (!latest || latest.historyBaseIndex !== beforeIndex) return;
+              set((state) => {
+                const current = state.conversations[id];
+                if (!current) return state;
+                const next = applyHistoryPage(current, {
+                  baseIndex: result.baseIndex,
+                  messages: result.messages,
+                });
+                return next === current ? state : patch(state, id, next);
+              });
+            } catch {
+              // 翻页失败保持已有尾窗，下次到顶再试
+            } finally {
+              olderHistoryInFlight.delete(id);
+              if (get().conversations[id]) {
+                set((state) => patch(state, id, { historyLoading: undefined }));
+              }
+            }
+            return;
+          }
+
+          // 当前代已到顶（baseIndex 为 0）：若有旧代游标则跨代拉取一页
+          if (!priorCursor) return;
+          const readPrior = window.electronAPI.agent.loadPriorGenerationPage;
+          if (!readPrior) return;
           olderHistoryInFlight.add(id);
           set((state) => patch(state, id, { historyLoading: true }));
           try {
-            const result = await read(id, beforeIndex);
-            if (!result.ok || result.messages.length === 0) return;
+            const result = await readPrior(id, priorCursor);
+            if (!result.ok) return;
             const latest = get().conversations[id];
-            if (!latest || latest.historyBaseIndex !== beforeIndex) return;
+            const latestCursor = latest?.priorGenerations?.cursor ?? null;
+            if (
+              !latest ||
+              !latestCursor ||
+              latestCursor.genIndex !== priorCursor.genIndex ||
+              latestCursor.beforeIndex !== priorCursor.beforeIndex
+            ) {
+              return;
+            }
             set((state) => {
               const current = state.conversations[id];
               if (!current) return state;
-              const next = applyHistoryPage(current, {
-                baseIndex: result.baseIndex,
-                messages: result.messages,
-              });
-              return next === current ? state : patch(state, id, next);
+              const next = prependPriorGenerationPage(current, result.entries, result.cursor);
+              return patch(state, id, next);
             });
           } catch {
-            // 翻页失败保持已有尾窗，下次到顶再试
+            // 跨代翻页失败保留当前游标，下次到顶再试
           } finally {
             olderHistoryInFlight.delete(id);
             if (get().conversations[id]) {
@@ -4804,7 +4861,52 @@ window.electronAPI.sourceAuthority.onChanged((projection) => {
   const conversations = useSessionsStore.getState().conversations;
   const next = remapConversationProjectIds(conversations, projection.conversations);
   if (next !== conversations) useSessionsStore.setState({ conversations: next });
+  const viewed = viewedFromState(useSessionsStore.getState());
+  if (viewed) void ensurePriorGenerations(viewed);
 });
+
+const priorGenerationsInFlight = new Set<string>();
+const priorGenerationsForceAgain = new Set<string>();
+
+/**
+ * 有旧代的根会话补齐跨代游标。正文若先由 worker 快照填上（或冷驱逐后热回来），尾窗补水不会跑，
+ * priorGenerations 就一直缺、翻不到旧代。只看权威记录里有旧代的会话，普通会话不发 IPC。
+ * force：换代后按权威记录整份重取（本地挪进旧代的只是已加载的那一截）。
+ */
+async function ensurePriorGenerations(conversationId: string, force = false): Promise<void> {
+  const conversation = useSessionsStore.getState().conversations[conversationId];
+  if (!conversation || conversation.parentId) return;
+  if (!force && conversation.priorGenerations) return;
+  const authority = peekSourceAuthority()?.conversations.find(
+    (candidate) => candidate.conversationId === conversationId
+  );
+  if (!force && !authority?.previousSessionFiles?.length) return;
+  const read = window.electronAPI.agent.readParentHistoryTail;
+  if (!read) return;
+  if (priorGenerationsInFlight.has(conversationId)) {
+    // 在途的可能是换代前发出的普通补齐：换代的强制重取排到它之后
+    if (force) priorGenerationsForceAgain.add(conversationId);
+    return;
+  }
+  priorGenerationsInFlight.add(conversationId);
+  try {
+    const result = await read(conversationId);
+    const priorGenerations = result.ok ? result.priorGenerations : undefined;
+    if (!priorGenerations) return;
+    useSessionsStore.setState((state) => {
+      const current = state.conversations[conversationId];
+      if (!current || current.parentId || (!force && current.priorGenerations)) return state;
+      return patch(state, conversationId, { priorGenerations });
+    });
+  } catch {
+    // 读不到旧代保持现状，下次切进来再试
+  } finally {
+    priorGenerationsInFlight.delete(conversationId);
+    if (priorGenerationsForceAgain.delete(conversationId)) {
+      void ensurePriorGenerations(conversationId, true);
+    }
+  }
+}
 
 // 标题总结开关关闭：在飞与失败残留一起清掉，否则转圈/红叹号会在关闭后继续挂在侧栏
 useSettingsStore.subscribe((state, previous) => {
@@ -4825,7 +4927,12 @@ async function hydrateParentHistoryTail(conversationId: string): Promise<void> {
     parentTailInFlightAt.delete(conversationId);
   }
   const current = useSessionsStore.getState().conversations[conversationId];
-  if (!current || current.parentId || hasAuthoritativeMessages(current.messages)) return;
+  if (
+    !current ||
+    current.parentId ||
+    hasAuthoritativeMessages(current.messages, current.priorGenerations)
+  )
+    return;
   const read = window.electronAPI.agent.readParentHistoryTail;
   if (!read) return;
   parentTailInFlight.add(conversationId);
@@ -4833,12 +4940,22 @@ async function hydrateParentHistoryTail(conversationId: string): Promise<void> {
   parentTailInFlightAt.set(conversationId, attemptAt);
   try {
     const result = await read(conversationId);
-    if (!result.ok || result.messages.length === 0) {
+    const hasPrior = Boolean(
+      result.ok &&
+        result.priorGenerations &&
+        (result.priorGenerations.pages.length > 0 || result.priorGenerations.cursor !== null)
+    );
+    if (!result.ok || (result.messages.length === 0 && !hasPrior)) {
       markParentHistoryAttempted(conversationId);
       return;
     }
     const latest = useSessionsStore.getState().conversations[conversationId];
-    if (!latest || latest.parentId || hasAuthoritativeMessages(latest.messages)) return;
+    if (
+      !latest ||
+      latest.parentId ||
+      hasAuthoritativeMessages(latest.messages, latest.priorGenerations)
+    )
+      return;
     const optimistic = latest.messages.filter((message) => message.optimistic);
     useSessionsStore.setState({
       conversations: {
@@ -4847,6 +4964,8 @@ async function hydrateParentHistoryTail(conversationId: string): Promise<void> {
           ...latest,
           messages: optimistic.length > 0 ? [...result.messages, ...optimistic] : result.messages,
           historyBaseIndex: result.baseIndex > 0 ? result.baseIndex : undefined,
+          ...(result.priorGenerations ? { priorGenerations: result.priorGenerations } : {}),
+          ...(result.messages.length === 0 && hasPrior ? { historyLoadAttempted: true } : {}),
         },
       },
     });
@@ -5009,6 +5128,7 @@ useSessionsStore.subscribe((state) => {
     // 历史补水不受 failed 门控：红字与历史同屏，而不是只剩红字
     if (conversation.parentId) loadViewedChildHistory(viewed);
     else if (needsHistoryHydration(conversation)) void hydrateParentHistoryTail(viewed);
+    else void ensurePriorGenerations(viewed);
     // worker 若还持有，快照比尾窗完整（审批 / 进行中轮次）；回空则由 sessionId 路由收回 started
     if (needsWorkerSnapshot(conversation)) void window.electronAPI.agent.requestSnapshot(viewed);
   }
@@ -5033,6 +5153,7 @@ export function peekConversation(
   if (conversation && viewedFromState(state) !== conversationId) {
     if (conversation.parentId) loadViewedChildHistory(conversationId);
     else if (needsHistoryHydration(conversation)) void hydrateParentHistoryTail(conversationId);
+    else void ensurePriorGenerations(conversationId);
     if (!options?.readOnly && needsWorkerSnapshot(conversation))
       void window.electronAPI.agent.requestSnapshot(conversationId);
   }

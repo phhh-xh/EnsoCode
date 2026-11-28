@@ -44,6 +44,7 @@ import {
 import {
   applyGuestEvent,
   applyGuestHistory,
+  applyGuestPriorHistory,
   applyGuestSnapshot,
   emptyGuestView,
   type GuestSessionView,
@@ -657,6 +658,18 @@ export class PairClient {
         this.scheduleCache();
         break;
       }
+      case 'prior-history': {
+        if (this.historyPending.has(payload.sessionId)) {
+          this.historyPending.delete(payload.sessionId);
+          this.events.onHistoryPending?.(payload.sessionId, false);
+        }
+        const view = this.sessions.get(payload.sessionId) ?? emptyGuestView();
+        const next = applyGuestPriorHistory(view, payload);
+        this.sessions.set(payload.sessionId, next);
+        this.events.onSession(payload.sessionId, { ...next, messages: new Map(next.messages) });
+        this.scheduleCache();
+        break;
+      }
       case 'bot-catalog':
         if (Array.isArray(payload.bots)) {
           this.events.onBotCatalog?.(
@@ -1094,11 +1107,12 @@ export class PairClient {
     this.events.onState('unauthorized');
   }
 
-  /** 是否还有更早的历史可拉（已加载区间起点 > 0） */
+  /** 是否还有更早的历史可拉（当前代起点 > 0，或仍有跨代游标） */
   hasOlder(sessionId: string): boolean {
     const view = this.sessions.get(sessionId);
-    if (!view || view.messages.size === 0) return false;
-    return Math.min(...view.messages.keys()) > 0;
+    if (!view) return false;
+    if (view.messages.size > 0 && Math.min(...view.messages.keys()) > 0) return true;
+    return Boolean(view.priorGenerations?.cursor);
   }
 
   /** 上滑加载上一页；无更早内容或已在途时静默忽略 */
@@ -1115,6 +1129,14 @@ export class PairClient {
     if (!view) return;
     this.historyPending.add(sessionId);
     this.events.onHistoryPending?.(sessionId, true);
-    this.send({ type: 'history', sessionId, beforeIndex: Math.min(...view.messages.keys()) });
+    const minIndex = view.messages.size > 0 ? Math.min(...view.messages.keys()) : 0;
+    if (minIndex > 0) {
+      this.send({ type: 'history', sessionId, beforeIndex: minIndex });
+      return;
+    }
+    const cursor = view.priorGenerations?.cursor;
+    if (cursor) {
+      this.send({ type: 'history', sessionId, beforeIndex: 0, cursor });
+    }
   }
 }

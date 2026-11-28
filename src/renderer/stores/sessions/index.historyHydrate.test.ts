@@ -4,6 +4,7 @@ import type {
   SourceAuthorityProjection,
 } from '@shared/types/agent';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { noteSourceAuthorityProjection } from '@/lib/sourceAuthorityCache';
 import {
   agentPrompt,
   agentSpawn,
@@ -889,5 +890,103 @@ describe('parent history tail hydrate', () => {
     expect(coldRun().lastActiveAt).toBe(9_000);
     upsert(2, 3_000);
     expect(coldRun().lastActiveAt).toBe(9_000);
+  });
+  describe('有旧代的会话补齐跨代游标（#689 P1-6）', () => {
+    const priorTail: ParentHistoryTailResult = {
+      ok: true,
+      messages: [],
+      baseIndex: 0,
+      priorGenerations: {
+        pages: [
+          { role: 'user', content: [{ type: 'text', text: '上一代' }], timestamp: 1 },
+          { kind: 'generation', at: 2, generationIndex: 1 },
+        ],
+        cursor: { genIndex: 0, beforeIndex: 4 },
+      },
+    };
+
+    function seedWithBody(id: string, previousSessionFiles?: string[]) {
+      noteSourceAuthorityProjection({
+        projects: [],
+        conversations: [
+          {
+            conversationId: id,
+            projectId: 'project',
+            kind: 'root',
+            lifecycle: 'ready',
+            version: 1,
+            sessionFile: `/tmp/${id}-g2.jsonl`,
+            ...(previousSessionFiles ? { previousSessionFiles } : {}),
+          },
+        ],
+      });
+      sessionsModule.useSessionsStore.setState((state) => ({
+        conversations: {
+          ...state.conversations,
+          [id]: {
+            ...state.conversations.parent,
+            id,
+            parentId: undefined,
+            activeTabId: undefined,
+            started: true,
+            spawning: false,
+            status: 'idle',
+            generation: 'g1',
+            lastSeq: 0,
+            sessionFile: `/tmp/${id}-g2.jsonl`,
+            // 正文已由 worker 快照填上：尾窗补水不会跑
+            messages: [{ role: 'assistant', content: [{ type: 'text', text: '当前代' }] }],
+            priorGenerations: undefined,
+          },
+        },
+        order: ['parent', id],
+        activeId: 'parent',
+      }));
+    }
+
+    it('正文已在但缺 priorGenerations：切进来按权威记录补拉一次', async () => {
+      seedWithBody('rotatedBody', ['/tmp/rotatedBody-g1.jsonl']);
+      readParentHistoryTail.mockResolvedValue(priorTail);
+      sessionsModule.useSessionsStore.getState().selectConversation('rotatedBody');
+      await vi.waitFor(() =>
+        expect(
+          sessionsModule.useSessionsStore.getState().conversations.rotatedBody.priorGenerations
+        ).toEqual(priorTail.ok ? priorTail.priorGenerations : undefined)
+      );
+      expect(readParentHistoryTail).toHaveBeenCalledWith('rotatedBody');
+      // 当前代正文不被覆盖
+      expect(
+        sessionsModule.useSessionsStore.getState().conversations.rotatedBody.messages
+      ).toHaveLength(1);
+    });
+
+    it('没有旧代的普通会话不为补游标多发 IPC', () => {
+      seedWithBody('plainBody');
+      readParentHistoryTail.mockClear();
+      sessionsModule.useSessionsStore.getState().selectConversation('plainBody');
+      expect(readParentHistoryTail).not.toHaveBeenCalled();
+    });
+
+    it('收到 session-rotated 后按权威记录整份重取 priorGenerations（本地只挪了已加载那一截）', async () => {
+      seedWithBody('rotLive', ['/tmp/rotLive-g1.jsonl']);
+      readParentHistoryTail.mockResolvedValue(priorTail);
+      onAgentEvent?.({
+        type: 'session-rotated',
+        identity: { sessionId: 'rotLive', generation: 'g1' },
+        seq: 1,
+        sessionFile: '/tmp/rotLive-g3.jsonl',
+        previousSessionFile: '/tmp/rotLive-g2.jsonl',
+        at: 10,
+      });
+      // 本地先原地挪进旧代
+      expect(
+        sessionsModule.useSessionsStore.getState().conversations.rotLive.priorGenerations?.cursor
+      ).toBeNull();
+      await vi.waitFor(() =>
+        expect(
+          sessionsModule.useSessionsStore.getState().conversations.rotLive.priorGenerations
+        ).toEqual(priorTail.ok ? priorTail.priorGenerations : undefined)
+      );
+    });
   });
 });

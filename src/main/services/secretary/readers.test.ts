@@ -1326,6 +1326,45 @@ describe('repo_status', () => {
     });
   });
 
+  it('repo_status 的 files 与 worktrees 超限时截断标注并支持翻页', async () => {
+    const manyFiles = `${Array.from({ length: 25 }, (_, i) => `?? file-${i}.ts`).join('\0')}\0`;
+    const manyWorktrees = Array.from(
+      { length: 12 },
+      (_, i) => `worktree /wt/alpha-${i}\nHEAD 9c23a80\nbranch refs/heads/wt-${i}\n`
+    ).join('\n');
+    const repo = fakeRepo({
+      'status --porcelain=v1 -z --untracked-files=normal': {
+        code: 0,
+        stdout: manyFiles,
+        stderr: '',
+      },
+      'worktree list --porcelain': { code: 0, stdout: manyWorktrees, stderr: '' },
+    });
+    const page1 = await run(handlers(repo).repo_status, { projectId: 'p1' });
+    expect(page1.changes).toMatchObject({
+      total: 25,
+      hasMore: true,
+      note: '共 25 条，已显示 20',
+    });
+    expect((page1.changes as { files: unknown[] }).files).toHaveLength(20);
+    expect(page1.worktrees).toHaveLength(10);
+    expect(page1.worktreesTotal).toBe(12);
+    expect(page1.worktreesHasMore).toBe(true);
+    expect(page1.worktreesNote).toBe(
+      '共 12 条，已显示 10（主检出、本次查询的 worktree 在前，其余按创建时间新到旧）'
+    );
+
+    const page2 = await run(handlers(repo).repo_status, {
+      projectId: 'p1',
+      filesOffset: 20,
+      worktreesOffset: 10,
+    });
+    expect((page2.changes as { files: Array<{ path: string }> }).files).toHaveLength(5);
+    expect((page2.changes as { files: Array<{ path: string }> }).files[0]?.path).toBe('file-20.ts');
+    expect(page2.worktrees).toHaveLength(2);
+    expect((page2.worktrees as Array<{ path: string }>)[0]?.path).toBe('/wt/alpha-10');
+  });
+
   it('路径越界被拒', async () => {
     const repo = fakeRepo({}, { known: ['/repo/alpha'] });
     for (const requested of ['/etc', '/repo/beta', '/repo/alpha/src']) {

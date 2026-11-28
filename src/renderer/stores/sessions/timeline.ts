@@ -14,6 +14,7 @@ import { leadingTaskWrapUp, TASK_WRAP_UP_TAG } from '@shared/turnNotes';
 import type {
   AgentSessionCustomEntry,
   ApprovalRequestInfo,
+  PriorGenerationEntry,
   ProjectedCodemodeCall,
   ProjectedMessage,
   ShellFailure,
@@ -211,6 +212,8 @@ export type TimelineItem =
   | { kind: 'session-custom'; key: string; entry: AgentSessionCustomEntry }
   /** 带字分隔线（委派子会话的「第 N 次执行」） */
   | { kind: 'divider'; key: string; text: string }
+  /** 上下文分代分隔线：标明此行之下开启了新一代上下文 */
+  | { kind: 'generation'; key: string; at: number }
   /** 插件经 session.inject 写入的消息；必须标明来源 */
   | { kind: 'plugin-message'; key: string; text: string; pluginId: string; pluginName: string }
   /** 应用重启时写到一半被中止、新进程已在下方接着写的回复：收成一行，展开看原文 */
@@ -1687,6 +1690,8 @@ export function buildTimeline(
     runDividers?: readonly { key: string; at: number; text: string }[];
     /** 秘书会话才给可读卡片留下参数；普通会话的工具行不需要 */
     secretarySession?: boolean;
+    /** 换代前的旧代消息段（含 kind:'generation' 分隔项），拼在当前代时间线前面 */
+    priorGenerations?: readonly PriorGenerationEntry[];
     /**
      * 应用退出打断的一轮：正文里被判定为「退出导致」的模型错误不再渲染，
      * 底部改钉一条系统提示说明原因。
@@ -1795,17 +1800,79 @@ export function buildTimeline(
     options?.compactionNoticeAt,
     options?.compactionTokensAfter
   );
-  if (!options?.interrupted) return withChrome;
-  return [
-    ...withChrome,
-    {
-      kind: 'interrupted' as const,
-      key: 'interrupted',
-      at: options.interrupted.at,
-      exitKind: options.interrupted.kind,
-      unfinishedTools: options.interrupted.unfinishedTools,
-    },
-  ];
+  const currentItems: TimelineItem[] = options?.interrupted
+    ? [
+        ...withChrome,
+        {
+          kind: 'interrupted' as const,
+          key: 'interrupted',
+          at: options.interrupted.at,
+          exitKind: options.interrupted.kind,
+          unfinishedTools: options.interrupted.unfinishedTools,
+        },
+      ]
+    : withChrome;
+
+  if (!options?.priorGenerations?.length) return currentItems;
+  const priorItems = buildPriorGenerationItems(
+    options.priorGenerations,
+    cwd,
+    options.secretarySession
+  );
+  return priorItems.length > 0 ? [...priorItems, ...currentItems] : currentItems;
+}
+
+function prefixTimelineKeys(items: TimelineItem[], prefix: string): TimelineItem[] {
+  return items.map((item) => {
+    if (item.kind === 'tool-group') {
+      return {
+        ...item,
+        key: `${prefix}${item.key}`,
+        children: prefixTimelineKeys(item.children, prefix),
+      };
+    }
+    return { ...item, key: `${prefix}${item.key}` };
+  });
+}
+
+function isGenerationDivider(
+  entry: PriorGenerationEntry
+): entry is Extract<PriorGenerationEntry, { kind: 'generation' }> {
+  return 'kind' in entry && entry.kind === 'generation';
+}
+
+function buildPriorGenerationItems(
+  entries: readonly PriorGenerationEntry[],
+  cwd: string | undefined,
+  secretarySession: boolean | undefined
+): TimelineItem[] {
+  const out: TimelineItem[] = [];
+  let segment: ProjectedMessage[] = [];
+  let segmentIndex = 0;
+
+  const flushSegment = (): void => {
+    if (segment.length === 0) return;
+    const built = buildTimeline(segment, false, [], cwd, { secretarySession });
+    out.push(...prefixTimelineKeys(built, `prior-${segmentIndex}-`));
+    segment = [];
+    segmentIndex += 1;
+  };
+
+  for (const entry of entries) {
+    if (isGenerationDivider(entry)) {
+      flushSegment();
+      out.push({
+        kind: 'generation',
+        key: `prior-gen-${entry.generationIndex ?? segmentIndex}-${entry.at}`,
+        at: entry.at,
+      });
+      segmentIndex += 1;
+    } else {
+      segment.push(entry);
+    }
+  }
+  flushSegment();
+  return out;
 }
 
 const DIVIDER_LEAD_MS = 10_000;

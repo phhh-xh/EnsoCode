@@ -352,6 +352,8 @@ function itemEqual(prev: TimelineRowProps, next: TimelineRowProps): boolean {
       return b.kind === 'session-custom' && a.entry === b.entry;
     case 'divider':
       return b.kind === 'divider' && a.text === b.text;
+    case 'generation':
+      return b.kind === 'generation' && a.at === b.at;
     case 'plugin-message':
       return b.kind === 'plugin-message' && a.text === b.text && a.pluginId === b.pluginId;
     case 'resumed-reply':
@@ -1615,8 +1617,35 @@ export const TimelineRow = memo(function TimelineRow({
           <span className="h-px flex-1 bg-border" />
         </div>
       );
+    case 'generation':
+      return <GenerationDividerRow at={item.at} />;
   }
 }, itemEqual);
+
+function GenerationDividerRow({ at }: { at: number }) {
+  const { t, locale } = useI18n();
+  const formatted = Number.isFinite(at)
+    ? new Intl.DateTimeFormat(locale === 'zh' ? 'zh-CN' : 'en-US', {
+        month: 'numeric',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      }).format(new Date(at))
+    : '';
+  const label = formatted
+    ? t('Started a new context · {{time}}', { time: formatted })
+    : t('Started a new context');
+  return (
+    <div
+      data-enso="generation-divider"
+      className="my-2 flex items-center gap-3 text-[11px] text-muted-foreground"
+    >
+      <span className="h-px flex-1 bg-border" />
+      <span>{label}</span>
+      <span className="h-px flex-1 bg-border" />
+    </div>
+  );
+}
 
 const customValue = (value: unknown): string => {
   if (typeof value === 'string') return value;

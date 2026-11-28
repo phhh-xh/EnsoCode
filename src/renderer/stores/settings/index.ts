@@ -245,6 +245,7 @@ const initialState = {
   scratchSessionsEnabled: false,
   dropShelfEnabled: false,
   secretaryEnabled: false,
+  secretaryContextGenerationsEnabled: false,
   botRouteClassifier: null as VirtualClassifierConfig | null,
   botAssistantModel: null as import('@shared/defaultModel').DefaultModelRef | null,
   botMaxRunningTurns: DEFAULT_BOT_MAX_RUNNING_TURNS,
@@ -498,6 +499,8 @@ export const useSettingsStore = create<SettingsState>()(
       setScratchSessionsEnabled: (scratchSessionsEnabled) => set({ scratchSessionsEnabled }),
       setDropShelfEnabled: (dropShelfEnabled) => set({ dropShelfEnabled }),
       setSecretaryEnabled: (secretaryEnabled) => set({ secretaryEnabled }),
+      setSecretaryContextGenerationsEnabled: (secretaryContextGenerationsEnabled) =>
+        set({ secretaryContextGenerationsEnabled: secretaryContextGenerationsEnabled === true }),
       setBotRouteClassifier: (botRouteClassifier) => set({ botRouteClassifier }),
       setBotAssistantModel: (botAssistantModel) => set({ botAssistantModel }),
       setBotMaxRunningTurns: (value) =>
@@ -1352,6 +1355,9 @@ export const useSettingsStore = create<SettingsState>()(
         }
         if (typeof s.botDiscussModeEnabled !== 'boolean') {
           useSettingsStore.setState({ botDiscussModeEnabled: false });
+        }
+        if (typeof s.secretaryContextGenerationsEnabled !== 'boolean') {
+          useSettingsStore.setState({ secretaryContextGenerationsEnabled: false });
         }
         if (typeof s.pluginAutoUpdate !== 'boolean') {
           useSettingsStore.setState({ pluginAutoUpdate: true });

@@ -47,7 +47,7 @@ export function buildRecapTurns(messages: readonly RecapMessage[], rounds: numbe
   for (const message of messages) {
     if (message.role === 'user') {
       flush();
-      if (isPureSessionUpdate(message.text)) continue;
+      if (isPureSessionUpdate(message.text) || /<secretary-brief>/.test(message.text)) continue;
       const text = displayText(message.text);
       user = text ? text : null;
       continue;

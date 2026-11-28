@@ -386,9 +386,12 @@ describe('秘书 / 连接 / 系统组设置迁移前后行为一致', { timeout:
     },
   ];
 
-  const assertContract = (probe: { row: string | null; kind: string; effects: unknown[] }[]) => {
+  const assertContract = (
+    probe: { row: string | null; kind: string; effects: unknown[] }[],
+    extra: ControlSpec[] = []
+  ) => {
     const failures: string[] = [];
-    for (const spec of contract) {
+    for (const spec of [...contract, ...extra]) {
       const matches = probe.filter((c) => c.row === spec.row && c.kind === spec.kind);
       const control = spec.idx === undefined ? matches[0] : matches[spec.idx];
       if (!control) {
@@ -435,6 +438,14 @@ describe('秘书 / 连接 / 系统组设置迁移前后行为一致', { timeout:
   it('打开 Bot 模式与秘书后契约同样成立', async () => {
     await act(async () => pin.store.setState({ botModeEnabled: true, secretaryEnabled: true }));
     await pin.settle();
-    assertContract(await pin.probe({ pressGroups: true }));
+    assertContract(await pin.probe({ pressGroups: true }), [
+      {
+        row: 'experimental.secretaryContextGenerations',
+        kind: 'switch',
+        storeKeys: ['secretaryContextGenerationsEnabled'],
+        api: [],
+        mustWriteStore: 'secretaryContextGenerationsEnabled',
+      },
+    ]);
   });
 });

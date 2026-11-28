@@ -2,6 +2,11 @@ import { createHash } from 'node:crypto';
 import { readFileSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import {
+  initialGenerationState,
+  parseGenerationState,
+  type SecretaryGenerationState,
+} from '../../../shared/secretary/generation';
+import {
   parseDispatchFile,
   parseProfile,
   parseSchedules,
@@ -146,6 +151,17 @@ export class SecretaryStore {
 
   todos(): SecretaryTodo[] {
     return parseTodos(readJson(this.file('todos.json')));
+  }
+
+  generationState(): SecretaryGenerationState {
+    const raw = readJson(this.file('generation.json'));
+    return raw ? parseGenerationState(raw) : initialGenerationState();
+  }
+
+  saveGenerationState(state: SecretaryGenerationState): SecretaryGenerationState {
+    const parsed = parseGenerationState(state);
+    writeJsonAtomic(this.file('generation.json'), parsed);
+    return parsed;
   }
 
   saveTodos(todos: SecretaryTodo[]): SecretaryTodo[] {

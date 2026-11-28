@@ -208,11 +208,15 @@ export function ChatScreen(props: Props) {
       : null
   );
 
+  const priorPages = view?.priorGenerations?.pages;
+  const priorPagesCount = priorPages?.length ?? 0;
+
   const timeline = useMemo(
     () =>
       buildTimeline(messages, running, [], props.cwd, {
         pendingApprovals: view?.approvals,
         compaction: view?.compaction,
+        priorGenerations: priorPages,
         // 尾窗是稀疏绝对 index，buildTimeline 要的是数组下标
         compactionNoticeAt: localCompactionNoticeIndex(
           entries.map(([index]) => index),
@@ -224,6 +228,7 @@ export function ChatScreen(props: Props) {
       entries,
       running,
       props.cwd,
+      priorPages,
       view?.approvals,
       view?.compaction,
       view?.compactionNoticeAt,
@@ -233,7 +238,7 @@ export function ChatScreen(props: Props) {
   /*
    * 上滑分页的滚动锚定：iOS Safari 不支持 overflow-anchor，旧页插到顶部后
    * scrollTop 不动、内容整体下压，画面会跳到更早的消息。请求前记下
-   * scrollHeight，旧页渲染完（最早 index 变小）用差值补偿 scrollTop。
+   * scrollHeight，旧页渲染完（最早 index 变小或旧代页数增加）用差值补偿 scrollTop。
    */
   const minIndex = view?.messages.size ? Math.min(...view.messages.keys()) : null;
   const anchorRef = useRef<{ height: number; top: number } | null>(null);
@@ -243,14 +248,14 @@ export function ChatScreen(props: Props) {
     anchorRef.current = el ? { height: el.scrollHeight, top: el.scrollTop } : null;
     props.onLoadOlder();
   }, [props.hasOlder, props.onLoadOlder]);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: minIndex 变小 = 旧页已渲染，此时才补偿
+  // biome-ignore lint/correctness/useExhaustiveDependencies: minIndex 变小或 priorPagesCount 变大 = 旧页已渲染，此时才补偿
   useLayoutEffect(() => {
     const el = timelineRef.current?.getScroller();
     const anchor = anchorRef.current;
     if (!el || !anchor) return;
     anchorRef.current = null;
     el.scrollTop = anchor.top + (el.scrollHeight - anchor.height);
-  }, [minIndex]);
+  }, [minIndex, priorPagesCount]);
 
   /*
    * 兜底跟随：Virtuoso 的 followOutput 只在 data 长度变化时触发，而流式输出是

@@ -1152,6 +1152,8 @@ export interface ConversationAuthority {
   lifecycle: 'draft' | 'ready' | 'ended';
   version: number;
   sessionFile?: string;
+  /** 换代前的旧代会话 jsonl 路径，从旧到新排列（只存在 registry，不进 settings.json） */
+  previousSessionFiles?: string[];
   selection?: DefaultModelRef & { revision: number };
   forkedFrom?: ConversationForkOrigin;
   bot?: ConversationBotBinding;
@@ -1335,8 +1337,40 @@ export type ConversationReloadResult =
   | { ok: true; source: 'tail'; messages: ProjectedMessage[]; baseIndex: number }
   | { ok: false; error: string };
 
+export interface PriorGenerationCursor {
+  /** 在 previousSessionFiles 中的下标（0 为最早一代） */
+  genIndex: number;
+  /** 下次从该代中此绝对消息下标之前读取；缺省表示读取该代尾部 */
+  beforeIndex?: number;
+}
+
+export interface GenerationDividerMessage {
+  kind: 'generation';
+  /** 开启新一代的时刻（epoch ms），用于展示「已开启新上下文 · 时间」 */
+  at: number;
+  /** 分隔对应的旧代编号（从 1 起），用于稳定渲染 key */
+  generationIndex?: number;
+}
+
+export type PriorGenerationEntry = ProjectedMessage | GenerationDividerMessage;
+
+export interface PriorGenerationsState {
+  pages: PriorGenerationEntry[];
+  cursor: PriorGenerationCursor | null;
+}
+
+export type PriorGenerationPageResult =
+  | { ok: true; entries: PriorGenerationEntry[]; cursor: PriorGenerationCursor | null }
+  | { ok: false; code: 'not-found' | 'unavailable'; error: string };
+
 export type ParentHistoryTailResult =
-  | { ok: true; messages: ProjectedMessage[]; baseIndex: number; projectId?: string }
+  | {
+      ok: true;
+      messages: ProjectedMessage[];
+      baseIndex: number;
+      projectId?: string;
+      priorGenerations?: PriorGenerationsState;
+    }
   | { ok: false; code: 'not-found' | 'unavailable'; error: string };
 
 export interface ChildRunSummary {
@@ -1586,6 +1620,8 @@ export type AgentCommand =
           type: 'prompt';
           /** 投递标识：worker 在对应 user 消息上屏后以 delivery-settled 回执，没进 pi 时以 delivery-rejected 回执 */
           deliveryId: string;
+          /** 忙即拒：用于 <secretary-flush>，会话已在跑时不走 followUp 排队，直接回 delivery-rejected('busy') */
+          rejectWhenBusy?: true;
         }
       | {
           type: 'steer';
@@ -1875,6 +1911,7 @@ export type AgentCommand =
   | { type: 'plugin-agent-cancel'; requestId: string }
   /** 运行中同步代理 env；null 表示删除该键 */
   | { type: 'set-proxy-env'; env: Record<string, string | null> }
+  | { type: 'rotate-session'; identity: SessionIdentity; requestId: string; brief: string }
   /**
    * 优雅重启：等所有会话到安全点后落断点，回 graceful-restart-ready，由 Main 换新进程。
    * keepBackgroundTasks：应用会重新打开，能脱离 worker 的转后台命令交给下一代，安全点不等它们
@@ -2215,6 +2252,7 @@ export type RendererAgentEvent =
           }
         >
       | { type: 'session-reloaded' }
+      | { type: 'rotate-session-result' }
     >
   | RendererChildLifecycleEvent
   | WorkerExitedEvent;
@@ -2269,6 +2307,25 @@ export type AgentWorkerEvent =
   | PluginMcpResultEvent
   | PluginAgentWorkerEvent
   | ParentLifecycleEvent
+  /** 会话就地换代：conversationId 与 generation 不变，只切换 sessionFile */
+  | {
+      type: 'session-rotated';
+      identity: SessionIdentity;
+      seq: number;
+      sessionFile: string;
+      previousSessionFile?: string;
+      at: number;
+    }
+  | {
+      type: 'rotate-session-result';
+      identity: SessionIdentity;
+      requestId: string;
+      ok: boolean;
+      sessionFile?: string;
+      previousSessionFile?: string;
+      at?: number;
+      error?: string;
+    }
   | ChildLifecycleEvent
   | {
       type: 'workspace-branch-context-consumed';
@@ -2282,8 +2339,8 @@ export type AgentWorkerEvent =
       identity: SessionIdentity;
       seq: number;
       deliveryId: string;
-      /** 上一轮停不下来，限时内等不到空闲：重发多半还会撞上，要重开会话 */
-      reason?: 'turn-stuck';
+      /** turn-stuck = 上一轮停不下来需重开会话；busy = rejectWhenBusy 遇到会话在跑 */
+      reason?: 'turn-stuck' | 'busy';
     }
   | { type: 'delivery-deferred'; identity: SessionIdentity; seq: number; deliveryId: string }
   | {
@@ -4102,6 +4159,7 @@ const parsePromptOrSteer = (value: Record<string, unknown>): AgentCommand | null
     'deliveryId',
     'activeOnly',
     'resume',
+    'rejectWhenBusy',
     'ownerInput',
     'instanceId',
   ]) &&
@@ -4112,6 +4170,8 @@ const parsePromptOrSteer = (value: Record<string, unknown>): AgentCommand | null
     (value.activeOnly === undefined ||
       (value.type === 'steer' && value.activeOnly === true && isDeliveryId(value.deliveryId))) &&
     (value.resume === undefined || (value.type === 'prompt' && value.resume === true)) &&
+    (value.rejectWhenBusy === undefined ||
+      (value.type === 'prompt' && value.rejectWhenBusy === true)) &&
     (value.ownerInput === undefined ||
       (value.ownerInput === true && isDeliveryId(value.deliveryId))) &&
     ((value.type === 'steer' && value.deliveryId === undefined) ||
@@ -4985,6 +5045,14 @@ const agentCommandParsers = {
     }
     return value as unknown as AgentCommand;
   },
+  'rotate-session': (value: Record<string, unknown>): AgentCommand | null => {
+    return hasExactKeys(value, ['type', 'identity', 'requestId', 'brief']) &&
+      parseSessionIdentity(value.identity) !== null &&
+      isNonEmptyString(value.requestId) &&
+      typeof value.brief === 'string'
+      ? (value as unknown as AgentCommand)
+      : null;
+  },
 } satisfies Record<AgentCommand['type'], ClosedParser<AgentCommand>>;
 
 /** 收窄 Main → worker 命令。旧 global/builtin session shape 一律拒绝。 */
@@ -5521,7 +5589,8 @@ const agentWorkerEventParsers = {
   'delivery-settled': parseDeliveryOutcome,
   'delivery-rejected': (value) => {
     const { reason, ...rest } = value;
-    return (reason === undefined || reason === 'turn-stuck') && parseDeliveryOutcome(rest)
+    return (reason === undefined || reason === 'turn-stuck' || reason === 'busy') &&
+      parseDeliveryOutcome(rest)
       ? (value as unknown as AgentWorkerEvent)
       : null;
   },
@@ -5807,6 +5876,38 @@ const agentWorkerEventParsers = {
         : null;
     }
   ),
+  'session-rotated': requireEventIdentity(
+    'parent',
+    (value: Record<string, unknown>): AgentWorkerEvent | null => {
+      return isNonEmptyString(value.sessionFile) &&
+        typeof value.at === 'number' &&
+        Number.isFinite(value.at) &&
+        (value.previousSessionFile === undefined || isNonEmptyString(value.previousSessionFile))
+        ? (value as unknown as AgentWorkerEvent)
+        : null;
+    }
+  ),
+  'rotate-session-result': (value: Record<string, unknown>): AgentWorkerEvent | null => {
+    return hasOnlyKeys(value, [
+      'type',
+      'identity',
+      'requestId',
+      'ok',
+      'sessionFile',
+      'previousSessionFile',
+      'at',
+      'error',
+    ]) &&
+      parseSessionIdentity(value.identity) !== null &&
+      isNonEmptyString(value.requestId) &&
+      typeof value.ok === 'boolean' &&
+      (value.sessionFile === undefined || isNonEmptyString(value.sessionFile)) &&
+      (value.previousSessionFile === undefined || isNonEmptyString(value.previousSessionFile)) &&
+      (value.at === undefined || (typeof value.at === 'number' && Number.isFinite(value.at))) &&
+      (value.error === undefined || typeof value.error === 'string')
+      ? (value as unknown as AgentWorkerEvent)
+      : null;
+  },
 } satisfies Record<AgentWorkerEvent['type'], ClosedParser<AgentWorkerEvent>>;
 
 /** 收窄 worker → Main/Renderer 统一事件；缺 generation 的旧事件拒绝。 */

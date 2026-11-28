@@ -6,13 +6,16 @@
  * - 命令：一律 `git --no-optional-locks -C <root>`，带超时，子命令全是读操作。
  */
 import { execFile } from 'node:child_process';
-import { existsSync, realpathSync } from 'node:fs';
+import { existsSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 
 const GIT_TIMEOUT_MS = 10_000;
 const GIT_MAX_BUFFER = 4 * 1024 * 1024;
-/** 未提交/未跟踪文件最多列这么多条，总数另给 */
-export const REPO_STATUS_FILE_MAX = 50;
+/** 未提交/未跟踪文件默认最多列这么多条，总数另给，支持分页 */
+export const REPO_STATUS_FILE_MAX = 20;
+export const REPO_STATUS_FILE_LIMIT_MAX = 50;
+export const REPO_STATUS_WORKTREE_DEFAULT = 10;
+export const REPO_STATUS_WORKTREE_MAX = 50;
 export const REPO_STATUS_COMMIT_DEFAULT = 10;
 export const REPO_STATUS_COMMIT_MAX = 20;
 
@@ -29,6 +32,8 @@ export interface RepoStatusDeps {
   /** 解析真实路径；不存在或不可读返回 null */
   realpath(target: string): Promise<string | null>;
   exists(target: string): boolean;
+  /** 文件修改时间（ms）；读不到返回 null。worktree 的 `.git` 文件在 `git worktree add` 时写入，用来排新旧 */
+  mtimeMs?(target: string): number | null;
 }
 
 export const runGit: GitRunner = (cwd, args) =>
@@ -59,6 +64,13 @@ export const realRepoDeps: RepoStatusDeps = {
     }
   },
   exists: (target) => existsSync(target),
+  mtimeMs(target) {
+    try {
+      return statSync(target).mtimeMs;
+    } catch {
+      return null;
+    }
+  },
 };
 
 /** 可见项目的本机检出目录；ssh 项目在本机跑 git 只会得到错误 */
@@ -155,9 +167,21 @@ export interface RepoStatusSnapshot {
   commits: RepoCommit[];
   base?: { ref: string; ahead: number; behind: number };
   contains?: { sha: string; inHead: boolean };
-  changes: { total: number; files: RepoChange[] };
+  changes: {
+    total: number;
+    offset?: number;
+    hasMore?: boolean;
+    note?: string;
+    files: RepoChange[];
+  };
   operation: { merge: boolean; rebase: boolean };
   worktrees: RepoWorktree[];
+  worktreesMeta?: {
+    total: number;
+    offset: number;
+    hasMore: boolean;
+    note?: string;
+  };
 }
 
 export type RepoStatusOutcome =
@@ -203,9 +227,13 @@ function parseCommits(stdout: string): RepoCommit[] {
 
 /**
  * `git status --porcelain=v1 -z`：每条以 NUL 分隔，重命名/复制条目的原路径紧跟其后。
- * 只取前 REPO_STATUS_FILE_MAX 条，总数照实给。
+ * 按 offset / limit 分页，总数照实给；截断时写明「共 N 条，已显示 M」。
  */
-export function parsePorcelainZ(stdout: string): { total: number; files: RepoChange[] } {
+export function parsePorcelainZ(
+  stdout: string,
+  offset = 0,
+  limit = REPO_STATUS_FILE_MAX
+): { total: number; offset?: number; hasMore?: boolean; note?: string; files: RepoChange[] } {
   const tokens = stdout.split('\0');
   const all: RepoChange[] = [];
   for (let index = 0; index < tokens.length; index += 1) {
@@ -217,7 +245,21 @@ export function parsePorcelainZ(stdout: string): { total: number; files: RepoCha
     // R / C 后面跟一条原路径，跳过它，别当成独立条目
     if (status.includes('R') || status.includes('C')) index += 1;
   }
-  return { total: all.length, files: all.slice(0, REPO_STATUS_FILE_MAX) };
+  const safeOffset = Math.max(0, Math.floor(Number.isFinite(offset) ? offset : 0));
+  const safeLimit = Math.min(
+    REPO_STATUS_FILE_LIMIT_MAX,
+    Math.max(1, Math.floor(Number.isFinite(limit) ? limit : REPO_STATUS_FILE_MAX))
+  );
+  const files = all.slice(safeOffset, safeOffset + safeLimit);
+  const hasMore = safeOffset + files.length < all.length;
+  const truncated = all.length > files.length;
+  return {
+    total: all.length,
+    ...(safeOffset > 0 ? { offset: safeOffset } : {}),
+    ...(hasMore ? { hasMore: true } : {}),
+    ...(truncated ? { note: `共 ${all.length} 条，已显示 ${files.length}` } : {}),
+    files,
+  };
 }
 
 /** `git worktree list --porcelain`：空行分段，每段有 worktree / HEAD / branch */
@@ -243,6 +285,29 @@ export function parseWorktrees(stdout: string): RepoWorktree[] {
   return worktrees;
 }
 
+/**
+ * 分页前排序：主检出（git 总是列在第一）→ 本次查询所在的 worktree → 其余按创建时间新到旧。
+ * git 自己按 .git/worktrees 目录名排，最新派发的 worktree 常落在末尾，按原序截断会先丢它们。
+ */
+function orderWorktrees(
+  worktrees: RepoWorktree[],
+  top: string,
+  deps: RepoStatusDeps
+): RepoWorktree[] {
+  if (worktrees.length <= 1) return worktrees;
+  const [main, ...linked] = worktrees;
+  const resolvedTop = path.resolve(top);
+  const created = new Map(
+    linked.map((worktree) => [worktree, deps.mtimeMs?.(path.join(worktree.path, '.git')) ?? 0])
+  );
+  linked.sort((a, b) => {
+    const aTop = path.resolve(a.path) === resolvedTop ? 1 : 0;
+    const bTop = path.resolve(b.path) === resolvedTop ? 1 : 0;
+    return bTop - aTop || (created.get(b) ?? 0) - (created.get(a) ?? 0);
+  });
+  return [main, ...linked];
+}
+
 async function rebaseInProgress(deps: RepoStatusDeps, root: string): Promise<boolean> {
   for (const name of ['rebase-merge', 'rebase-apply']) {
     const raw = await gitOut(deps, root, ['rev-parse', '--git-path', name]);
@@ -258,6 +323,10 @@ export interface RepoStatusRequest {
   limit: number;
   base?: string;
   contains?: string;
+  filesOffset?: number;
+  filesLimit?: number;
+  worktreesOffset?: number;
+  worktreesLimit?: number;
 }
 
 /**
@@ -309,7 +378,9 @@ export async function readRepoStatus(
     '--untracked-files=normal',
   ]);
   const changes =
-    statusRaw.code === 0 ? parsePorcelainZ(statusRaw.stdout) : { total: 0, files: [] };
+    statusRaw.code === 0
+      ? parsePorcelainZ(statusRaw.stdout, request.filesOffset, request.filesLimit)
+      : { total: 0, files: [] };
 
   let base: RepoStatusSnapshot['base'];
   if (baseRef) {
@@ -332,6 +403,25 @@ export async function readRepoStatus(
 
   const mergeHead = await deps.git(top, ['rev-parse', '--verify', '--quiet', 'MERGE_HEAD']);
   const worktreesRaw = await gitOut(deps, top, ['worktree', 'list', '--porcelain']);
+  const allWorktrees = orderWorktrees(worktreesRaw ? parseWorktrees(worktreesRaw) : [], top, deps);
+  const wtOffset = Math.max(
+    0,
+    Math.floor(Number.isFinite(request.worktreesOffset) ? (request.worktreesOffset ?? 0) : 0)
+  );
+  const wtLimit = Math.min(
+    REPO_STATUS_WORKTREE_MAX,
+    Math.max(
+      1,
+      Math.floor(
+        Number.isFinite(request.worktreesLimit)
+          ? (request.worktreesLimit ?? REPO_STATUS_WORKTREE_DEFAULT)
+          : REPO_STATUS_WORKTREE_DEFAULT
+      )
+    )
+  );
+  const pagedWorktrees = allWorktrees.slice(wtOffset, wtOffset + wtLimit);
+  const wtHasMore = wtOffset + pagedWorktrees.length < allWorktrees.length;
+  const wtTruncated = allWorktrees.length > pagedWorktrees.length;
 
   return {
     ok: true,
@@ -346,7 +436,21 @@ export async function readRepoStatus(
         merge: mergeHead.code === 0,
         rebase: await rebaseInProgress(deps, top),
       },
-      worktrees: worktreesRaw ? parseWorktrees(worktreesRaw) : [],
+      worktrees: pagedWorktrees,
+      ...(wtTruncated || wtOffset > 0
+        ? {
+            worktreesMeta: {
+              total: allWorktrees.length,
+              offset: wtOffset,
+              hasMore: wtHasMore,
+              ...(wtTruncated
+                ? {
+                    note: `共 ${allWorktrees.length} 条，已显示 ${pagedWorktrees.length}（主检出、本次查询的 worktree 在前，其余按创建时间新到旧）`,
+                  }
+                : {}),
+            },
+          }
+        : {}),
       ...(containsCheck && containsSha
         ? { contains: { sha: containsSha, inHead: containsCheck.code === 0 } }
         : {}),

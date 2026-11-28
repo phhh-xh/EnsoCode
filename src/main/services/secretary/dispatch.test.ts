@@ -2713,16 +2713,35 @@ describe('待办', () => {
         sessionState?: string;
         sessionTitle?: string;
       }[];
+      total?: number;
+      doneHidden?: number;
+      note?: string;
     };
+    // 默认只列未完成项，并标注隐藏的已完成数
     expect(listed.todos.map((item) => [item.id, item.status])).toEqual([
+      ['t1', 'todo'],
+      ['t3', 'active'],
+      ['t4', 'todo'],
+    ]);
+    expect(listed.total).toBe(4);
+    expect(listed.doneHidden).toBe(1);
+    expect(listed.note).toContain('共 4 条，已显示 3');
+    expect(listed.todos[0].text).toContain('<untrusted-content source="todo:t1">');
+    expect(listed.todos[1].sessionState).toBe('running');
+    expect(listed.todos[1].sessionTitle).toContain('在跑的会话');
+    // includeDone: true 列出全部（含已完成）
+    expect(
+      (
+        (await run(h.handlers.todo_list, { includeDone: true })) as {
+          todos: { id: string; status: string }[];
+        }
+      ).todos.map((item) => [item.id, item.status])
+    ).toEqual([
       ['t1', 'todo'],
       ['t2', 'done'],
       ['t3', 'active'],
       ['t4', 'todo'],
     ]);
-    expect(listed.todos[0].text).toContain('<untrusted-content source="todo:t1">');
-    expect(listed.todos[2].sessionState).toBe('running');
-    expect(listed.todos[2].sessionTitle).toContain('在跑的会话');
     expect(
       (
         (await run(h.handlers.todo_list, { status: 'done', projectId: 'p1' })) as {

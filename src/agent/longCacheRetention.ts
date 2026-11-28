@@ -1,5 +1,25 @@
 import type { Api, Model, SimpleStreamOptions } from '@earendil-works/pi-ai';
 
+const secretaryCacheSessions = new Set<string>();
+
+/** 登记秘书根会话的 pi sessionId：全局开关关闭时，runtime 层（含虚拟模型分派）也为其启用 1h 缓存 */
+export function registerSecretaryCacheSession(sessionId: string): void {
+  if (sessionId) secretaryCacheSessions.add(sessionId);
+}
+
+/** 秘书会话销毁、驱逐或换代时移出旧 pi sessionId */
+export function unregisterSecretaryCacheSession(sessionId: string): void {
+  if (sessionId) secretaryCacheSessions.delete(sessionId);
+}
+
+export function isSecretaryCacheSession(sessionId: string | undefined): boolean {
+  return Boolean(sessionId && secretaryCacheSessions.has(sessionId));
+}
+
+export function clearSecretaryCacheSessions(): void {
+  secretaryCacheSessions.clear();
+}
+
 /**
  * 长缓存只给会话请求（带 sessionId）且走 Anthropic Messages 的模型。不用 PI_CACHE_RETENTION：
  * 它是进程级的，会让 OpenAI Responses/Completions 多发 prompt_cache_retention:24h，
@@ -26,7 +46,7 @@ type StreamLike = (model: Model<Api>, context: never, options?: SimpleStreamOpti
  */
 export function installLongCacheRetention(
   target: object | undefined,
-  isEnabled: () => boolean
+  isEnabled: (options?: SimpleStreamOptions) => boolean
 ): void {
   if (!target) return;
   const methods = target as Record<string, unknown>;
@@ -35,6 +55,11 @@ export function installLongCacheRetention(
     if (typeof method !== 'function') continue;
     const original = method as StreamLike;
     methods[name] = (model: Model<Api>, context: never, options?: SimpleStreamOptions) =>
-      original.call(target, model, context, withLongCacheRetention(model, options, isEnabled()));
+      original.call(
+        target,
+        model,
+        context,
+        withLongCacheRetention(model, options, isEnabled(options))
+      );
   }
 }

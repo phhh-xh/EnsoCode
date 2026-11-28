@@ -38,8 +38,13 @@ export function btwHotSessionIds(
  * 不算：冷缓存清空后用户先发一句，length 变 1 但历史与正在跑的工具卡都还没补回，
  * 仍需要向 worker 要 snapshot。
  */
-export function hasAuthoritativeMessages(messages: readonly { optimistic?: boolean }[]): boolean {
-  return messages.some((message) => !message.optimistic);
+export function hasAuthoritativeMessages(
+  messages: readonly { optimistic?: boolean }[],
+  priorGenerations?: { pages: readonly unknown[] }
+): boolean {
+  return (
+    messages.some((message) => !message.optimistic) || (priorGenerations?.pages.length ?? 0) > 0
+  );
 }
 
 /**
@@ -51,6 +56,7 @@ export function needsHistoryHydration(conversation: {
   started: boolean;
   sessionFile?: string;
   messages: readonly { optimistic?: boolean }[];
+  priorGenerations?: { pages: readonly unknown[] };
   spawning: boolean;
   status?: string;
   historyLoadAttempted?: boolean;
@@ -60,7 +66,7 @@ export function needsHistoryHydration(conversation: {
   return (
     !conversation.historyLoadAttempted &&
     (conversation.started || Boolean(conversation.sessionFile)) &&
-    !hasAuthoritativeMessages(conversation.messages) &&
+    !hasAuthoritativeMessages(conversation.messages, conversation.priorGenerations) &&
     !conversation.spawning
   );
 }
@@ -99,6 +105,7 @@ export function chatSurfaceBusy(conversation: {
   started: boolean;
   sessionFile?: string;
   messages: readonly { optimistic?: boolean }[];
+  priorGenerations?: { pages: readonly unknown[] };
   spawning: boolean;
   status?: string;
   historyLoadAttempted?: boolean;
@@ -107,7 +114,7 @@ export function chatSurfaceBusy(conversation: {
 }): boolean {
   if (conversation.queuedStart) return false;
   if (conversation.status === 'running') return true;
-  if (hasAuthoritativeMessages(conversation.messages)) return false;
+  if (hasAuthoritativeMessages(conversation.messages, conversation.priorGenerations)) return false;
   // 准备超时降级：读历史不再锁输入；spawn 仍在途时发出去不会真正投递，继续锁到重试
   if (conversation.syncStalled) return conversation.spawning;
   return needsHistoryHydration(conversation) || conversation.spawning;
@@ -121,6 +128,7 @@ export function chatTimelineActivity(conversation: {
   started?: boolean;
   sessionFile?: string;
   messages: readonly { optimistic?: boolean }[];
+  priorGenerations?: { pages: readonly unknown[] };
   spawning: boolean;
   status?: string;
   historyLoadAttempted?: boolean;
@@ -138,6 +146,7 @@ export function chatTimelineActivity(conversation: {
       started: conversation.started === true,
       sessionFile: conversation.sessionFile,
       messages: conversation.messages,
+      priorGenerations: conversation.priorGenerations,
       spawning: conversation.spawning,
       historyLoadAttempted: conversation.historyLoadAttempted,
       queuedStart: conversation.queuedStart,
@@ -164,6 +173,7 @@ export function bodyLastActiveAt(
 type EvictableConversation = {
   messages: { timestamp?: number }[];
   customEntries: unknown[];
+  priorGenerations?: { pages: readonly unknown[] };
   lastActiveAt?: number;
 };
 
@@ -212,11 +222,17 @@ function evictColdMessageBodies<T extends EvictableConversation>(
   for (const [id, conversation] of Object.entries(conversations)) {
     if (requireStamp && lastViewedAt[id] === undefined) continue;
     if (isMessageCacheHot(id, viewedId, lastViewedAt, now, ttl, extraHotIds)) continue;
-    if (conversation.messages.length === 0 && conversation.customEntries.length === 0) continue;
+    if (
+      conversation.messages.length === 0 &&
+      conversation.customEntries.length === 0 &&
+      !conversation.priorGenerations
+    )
+      continue;
     next[id] = {
       ...conversation,
       messages: [],
       customEntries: [],
+      priorGenerations: undefined,
       lastActiveAt: bodyLastActiveAt(conversation.messages, conversation.lastActiveAt),
       historyBaseIndex: undefined,
       historyLoading: undefined,

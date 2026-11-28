@@ -1419,6 +1419,39 @@ register('memory_search', (call, ctx) => {
   ]);
 });
 
+register('history_search', (call, ctx) => {
+  const query = str(rec(call.args)?.query) ?? '';
+  const output = rec(parseJson(call.output));
+  const matches = Array.isArray(output?.matches) ? output.matches : [];
+  const error = errorText(call, ctx);
+  const blocks: ToolCardBlock[] = [];
+  if (error) blocks.push({ kind: 'error', text: error });
+  const items = matches.flatMap((entry) => {
+    const row = rec(entry);
+    const generation = typeof row?.generation === 'number' ? row.generation : undefined;
+    const role = str(row?.role);
+    const ts = typeof row?.timestamp === 'number' ? formatStamp(row.timestamp) : undefined;
+    const title = [role === 'user' ? ctx.t('User') : ctx.t('Assistant'), ts]
+      .filter(Boolean)
+      .join(' · ');
+    return [
+      {
+        title: title || (role === 'user' ? ctx.t('User') : ctx.t('Assistant')),
+        ...(generation !== undefined
+          ? { badge: `#${generation}`, badgeTone: 'neutral' as const }
+          : {}),
+      },
+    ];
+  });
+  if (items.length > 0) blocks.push({ kind: 'list', items });
+  return view(
+    call,
+    ctx.t('Search history {{query}} · {{count}}', { query, count: matches.length }),
+    blocks,
+    error ? { tone: 'error', label: ctx.t('Refused') } : undefined
+  );
+});
+
 register('memory_capture', (call, ctx) => {
   const parsed = parseMemoryCapture(call.output, str(rec(call.args)?.content));
   if (!parsed) return genericRenderer(call, ctx);

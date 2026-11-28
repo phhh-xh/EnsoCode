@@ -1,5 +1,6 @@
 import type { SessionEntry } from '@earendil-works/pi-coding-agent';
 import { describe, expect, it } from 'vitest';
+import { projectMessage } from './projection';
 import { transcriptMessages } from './transcript';
 
 type Msg = Extract<SessionEntry, { type: 'message' }>;
@@ -33,6 +34,25 @@ const compaction = (
   }) as unknown as SessionEntry;
 
 describe('transcriptMessages', () => {
+  it('读盘投影与实时投影下标对齐：只去掉换代简报，其他 display:false 的 custom 照旧保留', () => {
+    const user = { role: 'user', content: [{ type: 'text', text: 'hi' }] };
+    const outputLimit = {
+      role: 'custom',
+      customType: 'output-limit-recovery',
+      content: 'continue',
+      display: false,
+    };
+    const assistant = { role: 'assistant', content: [{ type: 'text', text: 'ok' }] };
+    // 实时路径：pi 对这三条都发 message_start，supervisor 逐条 projectMessage 后 push
+    const live = [user, outputLimit, assistant].map(projectMessage).filter(Boolean);
+    const reload = transcriptMessages({ getBranch: () => [] }, [user, outputLimit, assistant]);
+    expect(reload).toHaveLength(live.length);
+
+    const brief = { role: 'custom', customType: 'secretary-brief', content: 'b', display: false };
+    // 简报由 rotate 直接写盘、不发事件，实时投影里没有它
+    expect(transcriptMessages({ getBranch: () => [] }, [brief, user])).toEqual([user]);
+  });
+
   it('user 投影带持久化 entryId，但不修改原上下文', () => {
     const entries: SessionEntry[] = [msg('1', 'user', 'a', null), msg('2', 'assistant', 'b', '1')];
     const context = entries.map((e) => (e as Msg).message);

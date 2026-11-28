@@ -18,10 +18,16 @@ export function messageText(message: { content?: unknown }): string {
     .join('');
 }
 
+/** 判断文本是否为上下文换代静默 flush 提示 */
+export function isSecretaryFlushText(text: string): boolean {
+  if (!/<secretary-flush>/.test(text)) return false;
+  return text.replace(/<secretary-flush>[\s\S]*?<\/secretary-flush>/g, '').trim().length === 0;
+}
+
 /** 去掉回传包裹后没有别的正文：这是系统注入，不是用户打的字 */
 export function isPureSessionUpdate(text: string): boolean {
   if (
-    !/<session-updates>|<secretary-schedule>|<secretary-message>|<secretary-trigger>|<agent-notification>/.test(
+    !/<session-updates>|<secretary-schedule>|<secretary-message>|<secretary-trigger>|<secretary-flush>|<agent-notification>/.test(
       text
     )
   )
@@ -31,6 +37,7 @@ export function isPureSessionUpdate(text: string): boolean {
     .replace(/<secretary-schedule>[\s\S]*?<\/secretary-schedule>/g, '')
     .replace(/<secretary-message>[\s\S]*?<\/secretary-message>/g, '')
     .replace(/<secretary-trigger>[\s\S]*?<\/secretary-trigger>/g, '')
+    .replace(/<secretary-flush>[\s\S]*?<\/secretary-flush>/g, '')
     .replace(/<agent-notification>[\s\S]*?<\/agent-notification>/g, '')
     .trim();
   return stripped.length === 0;

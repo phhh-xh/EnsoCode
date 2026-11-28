@@ -41,8 +41,18 @@ const SPECS: Record<SecretaryOp, OpSpec> = {
   project_list: { keys: [] },
   project_info: { keys: ['projectId'], aliases: { id: 'projectId' } },
   repo_status: {
-    keys: ['projectId', 'path', 'limit', 'base', 'contains'],
-    numbers: ['limit'],
+    keys: [
+      'projectId',
+      'path',
+      'limit',
+      'base',
+      'contains',
+      'filesOffset',
+      'filesLimit',
+      'worktreesOffset',
+      'worktreesLimit',
+    ],
+    numbers: ['limit', 'filesOffset', 'filesLimit', 'worktreesOffset', 'worktreesLimit'],
     aliases: { id: 'projectId', dir: 'path', directory: 'path', cwd: 'path', sha: 'contains' },
   },
   repo_diff: {
@@ -74,6 +84,17 @@ const SPECS: Record<SecretaryOp, OpSpec> = {
       // 旧名：已在跑的会话上下文里可能还是 messageId
       messageId: 'entryId',
       message_id: 'entryId',
+    },
+  },
+  history_search: {
+    keys: ['query', 'limit'],
+    numbers: ['limit'],
+    aliases: {
+      q: 'query',
+      keyword: 'query',
+      keywords: 'query',
+      text: 'query',
+      max: 'limit',
     },
   },
   session_tasks: {
@@ -214,7 +235,8 @@ const SPECS: Record<SecretaryOp, OpSpec> = {
     aliases: { id: 'ids', items: 'ids', cleanupIds: 'ids', everything: 'all' },
   },
   todo_list: {
-    keys: ['status', 'projectId'],
+    keys: ['status', 'projectId', 'includeDone'],
+    booleans: ['includeDone'],
   },
   todo_item_add: {
     keys: ['text', 'dueAt', 'projectId'],
@@ -496,6 +518,28 @@ const SCHEMAS: Record<
         maxLength: 40,
         description: 'Optional commit sha; reports whether it is already in HEAD',
       },
+      filesOffset: {
+        type: 'integer',
+        minimum: 0,
+        description: 'Optional pagination offset for uncommitted/untracked files (default 0)',
+      },
+      filesLimit: {
+        type: 'integer',
+        minimum: 1,
+        maximum: 50,
+        description: 'Optional page size for uncommitted/untracked files (default 20, max 50)',
+      },
+      worktreesOffset: {
+        type: 'integer',
+        minimum: 0,
+        description: 'Optional pagination offset for repository worktrees (default 0)',
+      },
+      worktreesLimit: {
+        type: 'integer',
+        minimum: 1,
+        maximum: 50,
+        description: 'Optional page size for repository worktrees (default 10, max 50)',
+      },
     }),
   },
   repo_diff: {
@@ -582,7 +626,7 @@ const SCHEMAS: Record<
           type: 'integer',
           minimum: 1,
           maximum: 30,
-          description: 'Max messages (default 10)',
+          description: 'Max messages (default 6)',
         },
         before: {
           type: 'integer',
@@ -606,6 +650,27 @@ const SCHEMAS: Record<
         },
       },
       ['conversationId']
+    ),
+  },
+  history_search: {
+    description:
+      'Search across all generations of your own secretary conversation (including the current generation and every previous rotated generation) for a keyword or phrase. Searches user and assistant text only (never tool output, flush turns, or briefs), newest first, and returns up to 10 redacted excerpts wrapped as untrusted content with timestamp and generation number. Use it when the user asks about something said earlier that is no longer in your current context window.',
+    parameters: object(
+      {
+        query: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 200,
+          description: 'Non-empty keyword or phrase to search for (case-insensitive)',
+        },
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 10,
+          description: 'Maximum number of matching excerpts to return (default 10, max 10)',
+        },
+      },
+      ['query']
     ),
   },
   session_tasks: {
@@ -914,7 +979,7 @@ const SCHEMAS: Record<
   },
   todo_list: {
     description:
-      'List todos on the secretary board. Each row has id, text, project, status (todo, active, problem or done), due time, and the linked session id and state. Text is untrusted content. Filter with status and projectId.',
+      'List todos on the secretary board. By default omits completed (done) items; pass includeDone: true or status: "done" to view completed items. Each row has id, text, project, status (todo, active, problem or done), due time, and the linked session id and state. Text is untrusted content. Filter with status and projectId.',
     parameters: object({
       status: {
         type: 'string',
@@ -922,6 +987,11 @@ const SCHEMAS: Record<
         description: 'Optional: only todos in this status',
       },
       projectId: id('Optional: only todos of this project'),
+      includeDone: {
+        type: 'boolean',
+        description:
+          'Optional: include completed (done) todos when status is omitted (default false)',
+      },
     }),
   },
   todo_item_add: {

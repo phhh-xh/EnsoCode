@@ -2,6 +2,9 @@ import type {
   ApprovalRequestInfo,
   AskRequestInfo,
   BackgroundTaskInfo,
+  PriorGenerationCursor,
+  PriorGenerationEntry,
+  PriorGenerationsState,
   ProjectedMessage,
   SessionSnapshot,
   SubagentInfo,
@@ -33,6 +36,8 @@ export interface GuestSessionView {
    * 渲染前须经 localCompactionNoticeIndex() 换算成数组下标。
    */
   compactionNoticeAt?: number;
+  /** 换代前的旧代消息段（含 kind:'generation' 分隔项）与下一页游标 */
+  priorGenerations?: PriorGenerationsState;
 }
 
 /**
@@ -124,6 +129,22 @@ export function applyGuestEvent(
         view.compactionNoticeAt = maxIndex(view.messages) + 1;
       break;
     }
+    case 'session-rotated': {
+      // 原地换代：当前代消息并入 priorGenerations 末尾并追加分隔项，再清空当前代
+      const ordered = [...view.messages.entries()]
+        .sort((a, b) => a[0] - b[0])
+        .map(([, message]) => message);
+      const at = typeof event.at === 'number' && Number.isFinite(event.at) ? event.at : Date.now();
+      const existingPages = view.priorGenerations?.pages ?? [];
+      view.priorGenerations = {
+        pages: [...existingPages, ...ordered, { kind: 'generation', at }],
+        cursor: view.priorGenerations?.cursor ?? null,
+      };
+      view.messages = new Map();
+      view.compaction = undefined;
+      view.compactionNoticeAt = undefined;
+      return { view, lastIndex: -1 };
+    }
   }
   return { view };
 }
@@ -176,6 +197,9 @@ export function applyGuestSnapshot(
         compaction: snap.compaction,
         // 压完提示锚点：host 有值才带；旧 host / 未压过则沿用，重连不丢提示
         compactionNoticeAt: snap.compactionNoticeAt ?? sessions.get(id)?.compactionNoticeAt,
+        ...(sessions.get(id)?.priorGenerations
+          ? { priorGenerations: sessions.get(id)?.priorGenerations }
+          : {}),
       },
       lastIndex: base + incoming.length - 1,
     });
@@ -194,6 +218,24 @@ export function applyGuestHistory(
     messages.set(payload.baseIndex + i, message as ProjectedMessage);
   }
   return { ...view, messages };
+}
+
+/** 跨代分页应答：将旧代页面前置到 priorGenerations，replace=true 时覆盖（首屏补齐） */
+export function applyGuestPriorHistory(
+  view: GuestSessionView,
+  payload: {
+    entries: unknown[];
+    cursor: PriorGenerationCursor | null;
+    replace?: boolean;
+  }
+): GuestSessionView {
+  const incoming = payload.entries as PriorGenerationEntry[];
+  const existing = payload.replace ? [] : (view.priorGenerations?.pages ?? []);
+  const pages = incoming.length > 0 ? [...incoming, ...existing] : existing;
+  return {
+    ...view,
+    priorGenerations: { pages, cursor: payload.cursor },
+  };
 }
 
 /** worker-exited：host 侧 worker 崩了，所有会话置 failed（消息保留） */

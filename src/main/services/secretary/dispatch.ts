@@ -2546,6 +2546,7 @@ export function createSecretaryDispatchHandlers(
     async todo_list(params) {
       const status = stringParam(params, 'status');
       if (status && !(TODO_STATUSES as readonly string[]).includes(status)) return invalidArguments;
+      const includeDone = params.includeDone === true;
       const projectId = stringParam(params, 'projectId');
       const profile = await profileOf(ports);
       const projects = visibleProjects(await ports.projects(), profile);
@@ -2555,6 +2556,8 @@ export function createSecretaryDispatchHandlers(
       const rows = await ports.rows();
       const file = ports.dispatchFile();
       const todos = [];
+      let totalInScope = 0;
+      let doneHidden = 0;
       for (const todo of await ports.todos()) {
         if (todo.projectId && !projects.some((project) => project.projectId === todo.projectId))
           continue;
@@ -2570,6 +2573,11 @@ export function createSecretaryDispatchHandlers(
           : null;
         const phase = todoStatus(todo, session);
         if (status && phase !== (status as TodoStatus)) continue;
+        totalInScope += 1;
+        if (!status && !includeDone && phase === 'done') {
+          doneHidden += 1;
+          continue;
+        }
         const problem =
           phase === 'problem'
             ? (todo.problem ??
@@ -2602,7 +2610,19 @@ export function createSecretaryDispatchHandlers(
           ...(problem ? { problem } : {}),
         });
       }
-      return { ok: true, result: { todos } };
+      return {
+        ok: true,
+        result: {
+          todos,
+          ...(doneHidden > 0
+            ? {
+                total: totalInScope,
+                doneHidden,
+                note: `共 ${totalInScope} 条，已显示 ${todos.length}（另有 ${doneHidden} 条已完成，传 includeDone: true 可查看）`,
+              }
+            : {}),
+        },
+      };
     },
 
     async session_takeover_propose(params, ctx) {

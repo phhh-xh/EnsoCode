@@ -27,6 +27,11 @@ export function noteSourceAuthorityProjection(projection: SourceAuthorityProject
   cached = { at: Date.now(), value: projection };
 }
 
+/** 同步看一眼最近一份权威投影（不管新旧，不发 IPC）；还没读到过返回 null */
+export function peekSourceAuthority(): SourceAuthorityProjection | null {
+  return cached?.value ?? null;
+}
+
 export function resetSourceAuthorityCache(): void {
   cached = null;
   inflight = null;

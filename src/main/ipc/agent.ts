@@ -38,6 +38,9 @@ import {
   isDeliveryId,
   type McpStatusPush,
   type ParentHistoryTailResult,
+  type PriorGenerationCursor,
+  type PriorGenerationPageResult,
+  type PriorGenerationsState,
   type ProjectedMessage,
   parseAgentCommand,
   parseConversationAuthorityRequest,
@@ -110,6 +113,7 @@ import {
   resumesAfterQuit,
   retrySession,
   rewindSession,
+  rotateSession,
   sendAgentCommand,
   sendBrowserResultToSession,
   sendComputerResultToSession,
@@ -221,7 +225,10 @@ import type { RestartManifestEntry } from '../services/restartManifest';
 import { ContactStore, hasContactRoutes } from '../services/secretary/contact/store';
 import { secretaryToolDescriptors, secretaryToolsDir } from '../services/secretary/customTools';
 import { forgetDispatchSession, notifySecretaryChanged } from '../services/secretary/dispatch';
-import { secretaryEnabled } from '../services/secretary/enabled';
+import {
+  secretaryContextGenerationsEnabled,
+  secretaryEnabled,
+} from '../services/secretary/enabled';
 import { unfollowTargetEverywhere } from '../services/secretary/following';
 import { isSecretaryConversation, isSecretaryProject } from '../services/secretary/identity';
 import {
@@ -269,6 +276,7 @@ import {
   type HistoryProjectionOptions,
   projectAll,
   projectWindow,
+  readPriorGenerationPageFromFiles,
   resolveParentHistoryFile,
 } from '../services/sessionHistoryTail';
 import {
@@ -702,8 +710,12 @@ function removeConversationFiles(conversation: {
   conversationId: string;
   projectId: string;
   sessionFile?: string;
+  previousSessionFiles?: readonly string[];
 }): void {
   const project = sourceAuthority?.project(conversation.projectId);
+  const authority = sourceAuthority?.conversation(conversation.conversationId);
+  const sessionFile = authority?.sessionFile ?? conversation.sessionFile;
+  const previousSessionFiles = conversation.previousSessionFiles ?? authority?.previousSessionFiles;
   peekExtensionPlugins()?.forgetSession(conversation.conversationId);
   peekEventClaimStore()?.releaseSession(conversation.conversationId);
   getSecretaryImageStore()?.remove(conversation.conversationId);
@@ -711,7 +723,8 @@ function removeConversationFiles(conversation: {
   removeConversationSessionFiles({
     sessionDir: path.join(app.getPath('userData'), 'agent', 'sessions'),
     conversationId: conversation.conversationId,
-    ...(conversation.sessionFile ? { sessionFile: conversation.sessionFile } : {}),
+    ...(sessionFile ? { sessionFile } : {}),
+    ...(previousSessionFiles?.length ? { previousSessionFiles } : {}),
     ...(project?.kind === 'scratch' ? { scratchRoot: project.canonicalPath } : {}),
   });
 }
@@ -935,6 +948,7 @@ function secretarySystemPrompt(
     uiLanguage: normalizeLocale(typeof language === 'string' ? language : undefined),
     contactBound: contactBoundFor(ctx),
     ...(colleagues.length > 0 ? { colleagues } : {}),
+    ...(secretaryContextGenerationsEnabled() ? { contextGenerations: true } : {}),
   });
 }
 
@@ -1017,11 +1031,40 @@ export function promptRootFromMain(
   deliveryId: string,
   images?: AttachedImage[],
   /** 只有经过 owner 身份核验的入口（秘书联系方式里绑定的本人）才传 */
-  ownerInput?: true
+  ownerInput?: true,
+  /** 忙即拒：用于 <secretary-flush>，不排队 */
+  rejectWhenBusy?: true
 ): AgentActionResult {
   const identity = exactIdentity(sessionId);
   if (!identity) return { ok: false, error: STALE_SESSION_ERROR };
-  return promptSession(identity, text, images, deliveryId, undefined, ownerInput);
+  return promptSession(identity, text, images, deliveryId, undefined, ownerInput, rejectWhenBusy);
+}
+
+/**
+ * 换代落权威记录只认 worker 的 session-rotated 事件，不等 rotate 命令回包：rotate 排在长压缩
+ * 后面时 Main 那头已超时放弃，worker 照样会切文件，回包没人收也不能让权威记录停在旧代。
+ * 新文件必须是 sessions 目录下的根会话 jsonl。
+ */
+export function applySessionRotated(
+  event: Extract<AgentWorkerEvent, { type: 'session-rotated' }>
+): boolean {
+  if ('parent' in event.identity) return false;
+  if (!rootSessionFile(agentSessionDir(), event.sessionFile)) return false;
+  return sourceAuthority?.rotateSessionFile(event.identity.sessionId, event.sessionFile) ?? false;
+}
+
+/** Main 侧就地换代：通知 worker 切新 sessionFile；权威记录与索引由 session-rotated 事件同步 */
+export async function rotateRootFromMain(
+  sessionId: string,
+  brief: string
+): Promise<{ ok: boolean; sessionFile?: string; error?: string }> {
+  const identity = exactIdentity(sessionId);
+  if (!identity) return { ok: false, error: STALE_SESSION_ERROR };
+  const result = await rotateSession(identity, brief);
+  if (!result.ok || !result.sessionFile) {
+    return { ok: false, error: result.error ?? 'rotate-session failed' };
+  }
+  return { ok: true, sessionFile: result.sessionFile };
 }
 
 /** Main 侧插话：与用户自己插话同一条 steer 通道，pi 在当前工具调用结束后读到它 */
@@ -1183,10 +1226,13 @@ function persistedConversationForResume(
 ): PersistedPairConversation | null {
   const projectId = typeof row.projectId === 'string' ? row.projectId : '';
   if (!projectId) return null;
+  const authoritativeFile = sourceAuthority?.conversation(sessionId)?.sessionFile;
+  const sessionFile =
+    authoritativeFile ?? (typeof row.sessionFile === 'string' ? row.sessionFile : undefined);
   return {
     sessionId,
     projectId,
-    ...(typeof row.sessionFile === 'string' ? { sessionFile: row.sessionFile } : {}),
+    ...(sessionFile ? { sessionFile } : {}),
     ...(typeof row.lastProviderId === 'string' ? { lastProviderId: row.lastProviderId } : {}),
     ...(typeof row.lastModelId === 'string' ? { lastModelId: row.lastModelId } : {}),
     ...(typeof row.reasoningEnabled === 'boolean'
@@ -1303,6 +1349,11 @@ function agentSessionDir(): string {
   return path.join(app.getPath('userData'), 'agent', 'sessions');
 }
 
+/** Main 内部推导根会话 jsonl 目录，供秘书 history_search 等跨代校验使用 */
+export function getAgentSessionDir(): string {
+  return agentSessionDir();
+}
+
 /** 根会话 pi jsonl：直接位于 sessions 目录下的 .jsonl，且不是 child 的 enso- safe journal */
 function rootSessionFile(sessionDir: string, file: string): string | null {
   const resolved = resolveParentHistoryFile(sessionDir, file);
@@ -1355,8 +1406,8 @@ function authoritativeResumeFile(
       .conversations.some(
         (other) =>
           other.conversationId !== sessionId &&
-          other.sessionFile !== undefined &&
-          sameSessionFile(other.sessionFile, file)
+          ((other.sessionFile !== undefined && sameSessionFile(other.sessionFile, file)) ||
+            Boolean(other.previousSessionFiles?.some((prev) => sameSessionFile(prev, file))))
       );
   return file && !claimed ? { file } : null;
 }
@@ -1549,14 +1600,69 @@ async function remoteDistillCompletion(
     });
 }
 
+/** 冷开首屏当前代可见消息不足这么多条时，自动补拉上一代尾部窗口避免空屏 */
+const COLD_OPEN_PRIOR_MIN_MESSAGES = 8;
+
+function authoritativeSessionFile(conversationId: string): string | undefined {
+  const fromRegistry = sourceAuthority?.conversation(conversationId)?.sessionFile;
+  if (typeof fromRegistry === 'string' && fromRegistry.length > 0) return fromRegistry;
+  const persisted = agentSessionIndex.persistedConversation(conversationId);
+  return typeof persisted?.sessionFile === 'string' ? persisted.sessionFile : undefined;
+}
+
+export async function readPriorGenerationPage(
+  conversationId: string,
+  cursor: PriorGenerationCursor
+): Promise<PriorGenerationPageResult> {
+  const authority = sourceAuthority?.conversation(conversationId);
+  const previousSessionFiles = authority?.previousSessionFiles ?? [];
+  if (previousSessionFiles.length === 0) {
+    return { ok: true, entries: [], cursor: null };
+  }
+  const sessionDir = path.join(app.getPath('userData'), 'agent', 'sessions');
+  return readPriorGenerationPageFromFiles(
+    sessionDir,
+    previousSessionFiles,
+    cursor,
+    (file) => displayHistory(file, sessionDir),
+    { currentSessionFile: authority?.sessionFile }
+  );
+}
+
 async function readParentHistoryTail(
   conversationId: string,
   beforeIndex?: number
 ): Promise<ParentHistoryTailResult> {
-  const persisted = agentSessionIndex.persistedConversation(conversationId);
-  const sessionFile =
-    typeof persisted?.sessionFile === 'string' ? persisted.sessionFile : undefined;
-  return readSessionHistoryFile(sessionFile, beforeIndex);
+  const sessionFile = authoritativeSessionFile(conversationId);
+  const tail = await readSessionHistoryFile(sessionFile, beforeIndex);
+  if (beforeIndex !== undefined) return tail;
+
+  const previousSessionFiles = sourceAuthority?.conversation(conversationId)?.previousSessionFiles;
+  if (!previousSessionFiles || previousSessionFiles.length === 0) return tail;
+
+  const lastGenCursor: PriorGenerationCursor = { genIndex: previousSessionFiles.length - 1 };
+  // 当前代有足够可见消息：只需带上旧代起点游标，翻到顶再按需拉取
+  if (tail.ok && tail.messages.length >= COLD_OPEN_PRIOR_MIN_MESSAGES) {
+    return {
+      ...tail,
+      priorGenerations: { pages: [], cursor: lastGenCursor },
+    };
+  }
+
+  // 当前代可见消息不足一页（含 0 条或刚换代尚无可见消息）：自动补拉上一代尾部窗口
+  const prior = await readPriorGenerationPage(conversationId, lastGenCursor);
+  if (!prior.ok) return tail;
+  const priorGenerations: PriorGenerationsState = {
+    pages: prior.entries,
+    cursor: prior.cursor,
+  };
+  if (tail.ok) {
+    return { ...tail, priorGenerations };
+  }
+  if (prior.entries.length > 0 || prior.cursor !== null) {
+    return { ok: true, messages: [], baseIndex: 0, priorGenerations };
+  }
+  return tail;
 }
 
 const historyMemo = createFileMemo<unknown[]>({
@@ -1777,6 +1883,11 @@ function wirePairAgentBridge(): void {
       if (identity) respondAsk(identity, requestId, answer);
     },
     spawn: (request) => spawnRootFromMain(request),
+    readPriorGenerationPage: (sessionId, cursor) => readPriorGenerationPage(sessionId, cursor),
+    priorGenerationInitialCursor: (sessionId) => {
+      const prev = sourceAuthority?.conversation(sessionId)?.previousSessionFiles;
+      return prev && prev.length > 0 ? { genIndex: prev.length - 1 } : null;
+    },
   });
 }
 
@@ -2491,6 +2602,7 @@ export function registerAgentHandlers(): void {
         ).catch(() => {});
       }
     }
+    if (workerEvent.type === 'session-rotated') applySessionRotated(workerEvent);
     if (workerEvent.type === 'parent-ready') {
       coldResumeReady(workerEvent.identity.sessionId);
       // 重启 / worker 退出打断、父会话还不知情的子代理 Run：父会话回来后补一次通知
@@ -3004,6 +3116,7 @@ export function registerAgentHandlers(): void {
       broadcastAgentEvent(rendererEvent);
       return;
     }
+    if (workerEvent.type === 'rotate-session-result') return;
     broadcastAgentEvent(workerEvent);
   });
 
@@ -3154,6 +3267,35 @@ export function registerAgentHandlers(): void {
       typeof rawBefore === 'number' && Number.isFinite(rawBefore) ? rawBefore : undefined;
     return await readParentHistoryTail(conversationId, beforeIndex);
   });
+
+  ipcMain.handle(
+    IPC_CHANNELS.AGENT_PRIOR_GENERATION_PAGE,
+    async (_event, request: unknown): Promise<PriorGenerationPageResult> => {
+      const record = asRecord(request);
+      const conversationId = record?.conversationId;
+      const cursorRecord = asRecord(record?.cursor);
+      const rawGenIndex = cursorRecord?.genIndex;
+      const rawBefore = cursorRecord?.beforeIndex;
+      if (
+        !isNonEmptyString(conversationId) ||
+        typeof rawGenIndex !== 'number' ||
+        !Number.isInteger(rawGenIndex) ||
+        rawGenIndex < 0
+      ) {
+        return { ok: false, code: 'unavailable', error: 'Invalid prior generation cursor.' };
+      }
+      if (
+        rawBefore !== undefined &&
+        (typeof rawBefore !== 'number' || !Number.isInteger(rawBefore) || rawBefore < 0)
+      ) {
+        return { ok: false, code: 'unavailable', error: 'Invalid prior generation beforeIndex.' };
+      }
+      return await readPriorGenerationPage(conversationId, {
+        genIndex: rawGenIndex,
+        ...(rawBefore !== undefined ? { beforeIndex: rawBefore } : {}),
+      });
+    }
+  );
 
   // 标题总结：渲染层只传 conversationId + 输入（首条即时 / 每轮滚动）；模型与凭证由 Main 从设置自读。
   // 回退链（独立标题模型 → 全局默认 → 会话模型）上全部可解析的候选一次性下发，worker 依次尝试。

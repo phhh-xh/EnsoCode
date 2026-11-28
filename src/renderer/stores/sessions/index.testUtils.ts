@@ -3,6 +3,8 @@ import type {
   ConversationReloadResult,
   DispatchMainEvent,
   ParentHistoryTailResult,
+  PriorGenerationCursor,
+  PriorGenerationPageResult,
   RendererAgentEvent,
   SourceAuthorityProjection,
 } from '@shared/types/agent';
@@ -70,6 +72,16 @@ export const readParentHistoryTail = vi.fn(
     ok: false,
     code: 'not-found',
     error: 'no',
+  })
+);
+export const loadPriorGenerationPage = vi.fn(
+  async (
+    _conversationId?: string,
+    _cursor?: PriorGenerationCursor
+  ): Promise<PriorGenerationPageResult> => ({
+    ok: true,
+    entries: [],
+    cursor: null,
   })
 );
 export const dispatch = vi.fn();
@@ -249,6 +261,7 @@ export function installSessionGlobals(options?: { captureAsks?: boolean }) {
         }),
         requestSnapshot,
         readParentHistoryTail,
+        loadPriorGenerationPage,
         readChildHistory,
         readChildRun,
         reloadConversation,
@@ -361,6 +374,12 @@ export async function resetSessionHarness() {
     ok: false,
     code: 'not-found',
     error: 'no',
+  });
+  loadPriorGenerationPage.mockReset();
+  loadPriorGenerationPage.mockResolvedValue({
+    ok: true,
+    entries: [],
+    cursor: null,
   });
   agentSpawn.mockClear();
   agentRewind.mockClear();

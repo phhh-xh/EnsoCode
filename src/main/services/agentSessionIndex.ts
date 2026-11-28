@@ -607,7 +607,8 @@ export class AgentSessionIndex {
       event.type === 'session-wake-requested' ||
       event.type === 'session-reminder-due' ||
       event.type === 'session-reminders-changed' ||
-      event.type === 'unopened-background-tasks'
+      event.type === 'unopened-background-tasks' ||
+      event.type === 'rotate-session-result'
     )
       return false;
     if (
@@ -738,6 +739,11 @@ export class AgentSessionIndex {
     }
     if (event.type === 'message-upsert') {
       current.lastMessageIndex = Math.max(current.lastMessageIndex ?? -1, event.index);
+      return true;
+    }
+    if (event.type === 'session-rotated') {
+      current.sessionFile = event.sessionFile;
+      current.lastMessageIndex = undefined;
       return true;
     }
     if (event.type === 'session-meta') {

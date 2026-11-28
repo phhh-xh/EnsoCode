@@ -17,6 +17,7 @@ export interface SessionsPersistSlice {
 
 export const RUNTIME_CONVERSATION_KEYS = [
   'messages',
+  'priorGenerations',
   'requestBody',
   'historyBaseIndex',
   'commands',
@@ -76,6 +77,7 @@ function persistOne(conversation: PersistableConversation): PersistableConversat
       conversation.lastActiveAt ??
       conversation.createdAt,
     messages: [],
+    priorGenerations: undefined,
     historyBaseIndex: undefined,
     commands: [],
     customEntries: [],

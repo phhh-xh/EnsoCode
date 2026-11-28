@@ -57,6 +57,11 @@ export const DIRECT_SIGNAL_MAX_CHARS = 16_384;
 
 export type PairSyncCursor = { epoch: string; seq: number };
 
+export interface PairPriorGenerationCursor {
+  genIndex: number;
+  beforeIndex?: number;
+}
+
 export type PairSessionSync = {
   type: 'session-sync';
   sessionId: string;
@@ -101,8 +106,13 @@ export type PhoneToHost =
   | { type: 'set-model'; sessionId: string; providerId: string; modelId: string }
   | { type: 'set-reasoning'; sessionId: string; enabled: boolean }
   | { type: 'set-thinking'; sessionId: string; level: ThinkingLevel }
-  /** 上滑分页：拉取 beforeIndex 之前的一页历史消息 */
-  | { type: 'history'; sessionId: string; beforeIndex: number }
+  /** 上滑分页：拉取 beforeIndex 之前的一页历史消息；带 cursor 时跨代读取旧代历史 */
+  | {
+      type: 'history';
+      sessionId: string;
+      beforeIndex: number;
+      cursor?: PairPriorGenerationCursor;
+    }
   /** 排队：轮次进行中发消息，与桌面同语义入队（不打断当前轮） */
   | { type: 'enqueue'; sessionId: string; text: string; images?: AttachedImage[] }
   | { type: 'queue-remove'; sessionId: string; messageId: string }
@@ -583,6 +593,14 @@ export type HostToPhone =
   | { type: 'push-config'; vapidPublicKey: string }
   /** history 命令的应答：baseIndex 之前拼接的一页消息，手机按绝对 index 合并 */
   | { type: 'history'; sessionId: string; baseIndex: number; messages: unknown[] }
+  /** 跨代分页应答（含消息与 kind:'generation' 分隔项 + 游标）；旧手机端无此分支会自动忽略 */
+  | {
+      type: 'prior-history';
+      sessionId: string;
+      entries: unknown[];
+      cursor: PairPriorGenerationCursor | null;
+      replace?: true;
+    }
   /**
    * host 自述：guest（另一台桌面）用 hostname 作默认节点名。
    * 旧版 PWA 的 switch 无 default 分支，未知帧直接忽略，因此可安全新增。

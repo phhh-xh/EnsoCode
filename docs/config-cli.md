@@ -61,7 +61,7 @@ enso config get providers.<id>            # apiKey、Authorization 等显示为 
 
 | 类别 | 规则 | get / list | set |
 | --- | --- | --- | --- |
-| 密钥和凭据 | 任一段键名匹配 `apiKey`、`api_key`、`secret`、`password`、`credential`、`authorization`、`cookie`、`*token`，或键名就是 `env`（MCP 环境变量）。例如 `providers.<id>.apiKey`、`providers.<id>.headers.Authorization`、`mcpServers.<id>.env`。名字含 `secret` 字样但不是密钥的字段（`secretaryEnabled`）在 `policy.ts` 的 `NOT_SECRET_FIELDS` 里豁免 | `get` 返回 `{ ok: false, hidden: true }`；`list` 和父对象中显示为 `***` | 拒绝 |
+| 密钥和凭据 | 任一段键名匹配 `apiKey`、`api_key`、`secret`、`password`、`credential`、`authorization`、`cookie`、`*token`，或键名就是 `env`（MCP 环境变量）。例如 `providers.<id>.apiKey`、`providers.<id>.headers.Authorization`、`mcpServers.<id>.env`。名字含 `secret` 字样但不是密钥的字段（`secretaryEnabled`、`secretaryContextGenerationsEnabled`）在 `policy.ts` 的 `NOT_SECRET_FIELDS` 里豁免 | `get` 返回 `{ ok: false, hidden: true }`；`list` 和父对象中显示为 `***` | 拒绝 |
 | 文件路径 | `worktreeRoot`、`backgroundImagePath`、`backgroundFolderPath`，以及任一段是 `path`、`dir`、`root`、`cwd` 或以 `Path`、`Dir`、`Root` 结尾的键 | 可读 | 拒绝 |
 | 执行命令 | `terminalShell`、`windowsLocalShell`、`fileOpenRules`、`contextMenuOpen`、`agy`（整个对象，含 `binaryPath` 与 `skipPermissions`），以及任一段是 `command` 或 `args` 的键（例如 MCP 的启动命令） | 可读 | 拒绝 |
 | 本机文件配对标记 | `gitCommitPromptCustomized`：自定义 Git Commit 提示词正文存在 `<userData>/git-commit-prompt.txt`，由设置页经专用 IPC 写入 / 删除，标记必须与文件同步 | 可读 | 拒绝，只能在设置页编辑或恢复默认 |
@@ -114,6 +114,8 @@ enso config get providers.<id>            # apiKey、Authorization 等显示为 
 `pluginLoggingEnabled`（布尔，缺省 `false`）控制是否记录插件控制台输出与运行日志。关闭时不采集、不进缓冲、不写盘，启动失败和崩溃等错误状态仍然显示。只接受布尔值，热生效，无需重启插件或应用，不参与配置同步。
 
 `appLoggingEnabled`（布尔，缺省 `false`）控制是否记录应用日志：`agent/logs/main.log`、`agent/logs/agent.log`、`agent/worker-exits.log`、`agent/compaction.log`、`agent/interrupted-turns.log`。关闭时这些文件不写盘，console 照常输出到 stdout/stderr；重启恢复等功能性文件（如 `interrupted-turns.json`、`worker-crash.json`、后台任务输出）照常写，已有日志不删除，仍可在设置 → 日志查看和导出。只接受布尔值，主进程与 agent worker 热生效，无需重启，不参与配置同步。与 `pluginLoggingEnabled` 相互独立。
+
+`secretaryContextGenerationsEnabled`（布尔，缺省 `false`）是「实验功能 → 秘书」下的上下文分代开关：开启后秘书家会话在上下文超过阈值时自动执行静默 flush 并就地换代；关闭后停止触发新换代（退回单文件追加 + pi 原生压缩），已有旧代历史依然完整可读、可检索。热生效，无需重启，仅限本机，不参与配置同步。因字段名含 `secret` 子串，已在 `policy.ts` 的 `NOT_SECRET_FIELDS` 豁免。
 
 以下键由更新器在启动时读取，设置页修改时还会另外调用专用 IPC，只改设置不会生效：
 

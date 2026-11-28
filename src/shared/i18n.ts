@@ -2459,6 +2459,11 @@ export const zhTranslations: Record<string, string> = {
   'Loading…': '加载中…',
   '(no log available)': '(暂无日志)',
   'Context compacted': '上下文已压缩',
+  'Started a new context': '已开启新上下文',
+  'Started a new context · {{time}}': '已开启新上下文 · {{time}}',
+  'Context generations': '上下文分代',
+  'Start a fresh context file with a brief when the secretary conversation grows large, keeping a continuous timeline across generations. Turn off to fall back to standard compaction; existing history remains readable.':
+    '当秘书会话上下文较长时，自动整理记忆并带着状态简报开启新一代上下文文件，桌面与手机保持连续时间线。关闭后退回原生压缩，已分代的历史仍可完整翻阅。',
   '{{kind}} · {{before}} → {{after}} · freed {{percent}}%':
     '{{kind}} · {{before}} → {{after}} · 释放 {{percent}}%',
   'Context compacted ({{tokens}} tokens before)': '上下文已压缩（压缩前 {{tokens}} tokens）',
@@ -4557,6 +4562,7 @@ export const zhTranslations: Record<string, string> = {
   '{{count}} files total, only the first ones are listed': '共 {{count}} 个文件，只列出前一部分',
   '+{{added}} −{{deleted}}': '+{{added}} −{{deleted}}',
   'Search memory {{query}} · {{count}}': '搜索记忆 {{query}} · {{count}} 条',
+  'Search history {{query}} · {{count}}': '检索历史 {{query}} · {{count}} 条',
   'Delete memory {{title}}': '删除记忆 {{title}}',
   'Save memory {{title}}': '记住 {{title}}',
   'Memory not written': '没有写入记忆',

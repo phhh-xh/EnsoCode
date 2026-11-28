@@ -11,6 +11,7 @@ export const SECRETARY_OPS = [
   'claims_list',
   'threads_list',
   'session_read',
+  'history_search',
   'session_tasks',
   'session_activity',
   'session_stats',

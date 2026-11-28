@@ -366,6 +366,8 @@ export const IPC_CHANNELS = {
   AGENT_CONVERSATION_RELOAD: 'agent:conversation-reload',
   /** 父会话 jsonl 尾窗/分页只读（不 spawn）；路径由 Main 从已登记 sessionFile 推导 */
   AGENT_PARENT_HISTORY_TAIL: 'agent:parent-history-tail',
+  /** 父会话旧代分页只读（不 spawn）；路径由 Main 从 registry.previousSessionFiles 推导 */
+  AGENT_PRIOR_GENERATION_PAGE: 'agent:prior-generation-page',
   AGENT_SUMMARIZE_TITLE: 'agent:summarize-title',
   /** 已启动会话就地换模型；worker 换完回报，Main 据此更新已启动模型记录 */
   AGENT_SET_MODEL: 'agent:set-model',

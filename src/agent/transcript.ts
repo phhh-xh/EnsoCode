@@ -5,8 +5,26 @@ import {
   PRIVACY_MASK_ENTRY,
   parsePrivacyMaskRecord,
 } from '@shared/privacyMask/report';
+import { SECRETARY_BRIEF_CUSTOM_TYPE } from '@shared/secretary/generation';
 import { OM_FOLDED } from './continuousMemory/vendor/session-ledger/types';
 import { sessionEntryToContextMessages } from './sessionEntryMessages';
+
+/**
+ * 换代简报：rotate 时直接写进 SessionManager，worker 不发任何消息事件，实时投影里没有它；
+ * 读盘投影也必须去掉，两边下标才对齐。其他 display:false 的 custom_message（输出超限续写、
+ * 分支上下文等）实时路径会发 message_start，两条路径都保留，时间线自己隐藏。
+ */
+export function isSecretaryBriefMessage(message: unknown): boolean {
+  if (!message || typeof message !== 'object') return false;
+  const record = message as { role?: unknown; customType?: unknown };
+  return record.role === 'custom' && record.customType === SECRETARY_BRIEF_CUSTOM_TYPE;
+}
+
+/** 读盘投影去掉换代简报，与 worker 实时投影的 baseIndex 对齐 */
+export function stripSecretaryBriefMessages<T>(messages: readonly T[]): T[] {
+  if (!messages.some(isSecretaryBriefMessage)) return [...messages];
+  return messages.filter((message) => !isSecretaryBriefMessage(message));
+}
 
 /**
  * 渲染层要的是完整对话记录，而 pi 的 `session.messages` 是 LLM 上下文视图：
@@ -27,17 +45,25 @@ export function transcriptMessages(
       break;
     }
   }
-  if (compactionIndex < 0)
-    return withPrivacyMask(withUserEntryIds(contextMessages, branch), branch);
+  if (compactionIndex < 0) {
+    return stripSecretaryBriefMessages(
+      withPrivacyMask(withUserEntryIds(contextMessages, branch), branch)
+    );
+  }
   const compaction = branch[compactionIndex] as Extract<SessionEntry, { type: 'compaction' }>;
   const keptIndex = compaction.firstKeptEntryId
     ? branch.findIndex((entry) => entry.id === compaction.firstKeptEntryId)
     : -1;
   const cut = keptIndex >= 0 && keptIndex < compactionIndex ? keptIndex : compactionIndex;
   const summarized = branch.slice(0, cut).flatMap(sessionEntryToContextMessages);
-  return withPrivacyMask(
-    withUserEntryIds(stampCompactionFromHook([...summarized, ...contextMessages], branch), branch),
-    branch
+  return stripSecretaryBriefMessages(
+    withPrivacyMask(
+      withUserEntryIds(
+        stampCompactionFromHook([...summarized, ...contextMessages], branch),
+        branch
+      ),
+      branch
+    )
   );
 }
 

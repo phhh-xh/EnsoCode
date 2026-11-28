@@ -35,12 +35,22 @@ import {
 import type { SessionHistoryStats } from '../sessionHistoryStats';
 import { currentBranch, repoIsClean } from '../worktree/service';
 import { autoArchived } from './autoArchive';
+import {
+  HISTORY_SEARCH_LIMIT_DEFAULT,
+  HISTORY_SEARCH_LIMIT_MAX,
+  type HistorySearchResult,
+  searchSecretaryHistory,
+} from './historySearch';
 import { leftoverReason, taskIsPersistent } from './leftover';
 import { projectAliasesFromSettings, secretaryProjectNames } from './projectLabel';
 import { readRepoDiff } from './repoDiff';
 import {
   REPO_STATUS_COMMIT_DEFAULT,
   REPO_STATUS_COMMIT_MAX,
+  REPO_STATUS_FILE_LIMIT_MAX,
+  REPO_STATUS_FILE_MAX,
+  REPO_STATUS_WORKTREE_DEFAULT,
+  REPO_STATUS_WORKTREE_MAX,
   type RepoScopeCandidate,
   type RepoStatusDeps,
   type RepoStatusSnapshot,
@@ -56,7 +66,7 @@ export { projectAliasesFromSettings };
 
 const DEFAULT_SESSION_LIMIT = 50;
 const MAX_SESSION_LIMIT = 100;
-const DEFAULT_READ_LIMIT = 10;
+const DEFAULT_READ_LIMIT = 6;
 const MAX_READ_LIMIT = 30;
 
 /** 秘书没有工作区的三种伪项目：没有可派活的目录，也不该出现在它的项目清单里 */
@@ -121,6 +131,12 @@ export interface SecretaryReadPorts {
   claims?(): MaybePromise<readonly SecretaryClaimView[]>;
   /** 需求线程；缺省表示没有 */
   threads?(): MaybePromise<readonly SecretaryDemandThreadView[]>;
+  /** 在当前秘书家会话的所有代（含旧代与当前代）中按关键词检索正文 */
+  searchOwnHistory?(
+    conversationId: string,
+    query: string,
+    limit: number
+  ): MaybePromise<HistorySearchResult | null>;
 }
 
 export interface SecretaryReadHandlers {
@@ -132,6 +148,7 @@ export interface SecretaryReadHandlers {
   claims_list: SecretaryOpHandler;
   threads_list: SecretaryOpHandler;
   session_read: SecretaryOpHandler;
+  history_search: SecretaryOpHandler;
   session_tasks: SecretaryOpHandler;
   session_activity: SecretaryOpHandler;
   session_stats: SecretaryOpHandler;
@@ -363,6 +380,9 @@ function presentRepoStatus(
     ...(snapshot.contains ? { contains: snapshot.contains } : {}),
     changes: {
       total: snapshot.changes.total,
+      ...(snapshot.changes.offset !== undefined ? { offset: snapshot.changes.offset } : {}),
+      ...(snapshot.changes.hasMore ? { hasMore: true } : {}),
+      ...(snapshot.changes.note ? { note: snapshot.changes.note } : {}),
       files: snapshot.changes.files.map((file) => ({
         status: file.status,
         path: redactSecrets(file.path),
@@ -374,6 +394,16 @@ function presentRepoStatus(
       branch: worktree.branch === null ? null : redactSecrets(worktree.branch),
       head: worktree.head,
     })),
+    ...(snapshot.worktreesMeta
+      ? {
+          worktreesTotal: snapshot.worktreesMeta.total,
+          ...(snapshot.worktreesMeta.offset > 0
+            ? { worktreesOffset: snapshot.worktreesMeta.offset }
+            : {}),
+          ...(snapshot.worktreesMeta.hasMore ? { worktreesHasMore: true } : {}),
+          ...(snapshot.worktreesMeta.note ? { worktreesNote: snapshot.worktreesMeta.note } : {}),
+        }
+      : {}),
   };
 }
 
@@ -569,6 +599,18 @@ export function createSecretaryReadHandlers(ports: SecretaryReadPorts): Secretar
       const readable = page.ok
         ? projectReadableMessages(page.messages, { limit, baseIndex: page.baseIndex })
         : { messages: [], hasMore: false };
+      const windowReadableTotal =
+        page.ok && readable.hasMore
+          ? projectReadableMessages(page.messages, {
+              limit: Math.max(1, page.messages.length),
+              baseIndex: page.baseIndex,
+            }).messages.length
+          : 0;
+      const messagesNote = readable.hasMore
+        ? page.ok && page.baseIndex === 0
+          ? `共 ${windowReadableTotal} 条，已显示 ${readable.messages.length}`
+          : `共 ${Math.max(windowReadableTotal, readable.messages.length)}+ 条，已显示 ${readable.messages.length}`
+        : undefined;
       const source = `session:${conversationId}`;
       const goal = await goalResultOf(source, conversationId);
       const messages = readable.messages.map((message) => ({
@@ -594,6 +636,7 @@ export function createSecretaryReadHandlers(ports: SecretaryReadPorts): Secretar
           messages,
           hasMore: readable.hasMore,
           ...(readable.hasMore ? { nextBefore } : {}),
+          ...(messagesNote ? { note: messagesNote } : {}),
           ...(page.ok ? {} : { historyError: page.code }),
           // 挂着自定提醒：会话在等自己定的时间点，不是卡住
           ...(reminders.length > 0
@@ -696,6 +739,21 @@ export function createSecretaryReadHandlers(ports: SecretaryReadPorts): Secretar
       };
     },
 
+    async history_search(params, ctx) {
+      const query = stringParam(params, 'query');
+      if (!query) return invalidArguments;
+      const conversationId = ctx.secretaryConversationId;
+      if (!conversationId || !ports.searchOwnHistory) return notFound;
+      const limit = countParam(
+        params.limit,
+        HISTORY_SEARCH_LIMIT_DEFAULT,
+        HISTORY_SEARCH_LIMIT_MAX
+      );
+      const result = await ports.searchOwnHistory(conversationId, query, limit);
+      if (!result) return notFound;
+      return { ok: true, result };
+    },
+
     async session_stats(params) {
       const conversationId = stringParam(params, 'conversationId');
       if (!conversationId) return invalidArguments;
@@ -790,6 +848,22 @@ export function createSecretaryReadHandlers(ports: SecretaryReadPorts): Secretar
       const limit = countParam(params.limit, REPO_STATUS_COMMIT_DEFAULT, REPO_STATUS_COMMIT_MAX);
       const base = stringParam(params, 'base');
       const contains = stringParam(params, 'contains');
+      const filesOffset =
+        params.filesOffset !== undefined ? offsetParam(params.filesOffset) : undefined;
+      const filesLimit =
+        params.filesLimit !== undefined
+          ? countParam(params.filesLimit, REPO_STATUS_FILE_MAX, REPO_STATUS_FILE_LIMIT_MAX)
+          : undefined;
+      const worktreesOffset =
+        params.worktreesOffset !== undefined ? offsetParam(params.worktreesOffset) : undefined;
+      const worktreesLimit =
+        params.worktreesLimit !== undefined
+          ? countParam(
+              params.worktreesLimit,
+              REPO_STATUS_WORKTREE_DEFAULT,
+              REPO_STATUS_WORKTREE_MAX
+            )
+          : undefined;
       const scope = await repoScopeOf(params);
       if ('error' in scope) return { ok: false, error: scope.error };
       const outcome = await readRepoStatus(ports.repo, {
@@ -797,6 +871,10 @@ export function createSecretaryReadHandlers(ports: SecretaryReadPorts): Secretar
         limit,
         ...(base ? { base } : {}),
         ...(contains ? { contains } : {}),
+        ...(filesOffset !== undefined ? { filesOffset } : {}),
+        ...(filesLimit !== undefined ? { filesLimit } : {}),
+        ...(worktreesOffset !== undefined ? { worktreesOffset } : {}),
+        ...(worktreesLimit !== undefined ? { worktreesLimit } : {}),
       });
       if (!outcome.ok) return { ok: false, error: outcome.code };
       return {
@@ -963,6 +1041,18 @@ export function readPortsFor(
     async threads() {
       const rows = await (await import('../../ipc/settings')).readPersistedConversations();
       return secretaryDemandThreadViews(rows);
+    },
+    async searchOwnHistory(conversationId, query, limit) {
+      const agentIpc = await import('../../ipc/agent');
+      const conv = agentIpc.getSourceAuthorityRegistry()?.conversation(conversationId);
+      if (!conv) return null;
+      return searchSecretaryHistory({
+        sessionDir: agentIpc.getAgentSessionDir(),
+        previousSessionFiles: conv.previousSessionFiles ?? [],
+        currentSessionFile: conv.sessionFile,
+        query,
+        limit,
+      });
     },
   };
 }

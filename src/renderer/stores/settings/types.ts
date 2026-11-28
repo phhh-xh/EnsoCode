@@ -209,6 +209,8 @@ export interface SettingsState {
   dropShelfEnabled: boolean;
   /** 实验功能：秘书 Agent；缺省关，关闭时 Main 拒绝全部秘书 IPC、工具执行与会话 spawn */
   secretaryEnabled: boolean;
+  /** 实验功能：秘书上下文分代；缺省关，关闭后停止新换代，已有跨代历史照常可读 */
+  secretaryContextGenerationsEnabled: boolean;
   /** Bot 群聊智能选人的分类来源；null 走标题模型回退链 judge */
   botRouteClassifier: VirtualClassifierConfig | null;
   /** Bot 辅助任务（自动设置能力等）用的模型；null 跟随默认模型 */
@@ -456,6 +458,7 @@ export interface SettingsState {
   setScratchSessionsEnabled: (value: boolean) => void;
   setDropShelfEnabled: (value: boolean) => void;
   setSecretaryEnabled: (value: boolean) => void;
+  setSecretaryContextGenerationsEnabled: (value: boolean) => void;
   setBotRouteClassifier: (value: VirtualClassifierConfig | null) => void;
   setBotAssistantModel: (value: DefaultModelRef | null) => void;
   setBotMaxRunningTurns: (value: number) => void;

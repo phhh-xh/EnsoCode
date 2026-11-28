@@ -113,6 +113,12 @@ export function ChatSessionTimeline({
   const historyBaseIndex = useSessionsStore(
     (state) => state.conversations[conversationId]?.historyBaseIndex ?? 0
   );
+  const priorGenerations = useSessionsStore(
+    (state) => state.conversations[conversationId]?.priorGenerations
+  );
+  const priorPages = priorGenerations?.pages;
+  const priorPagesCount = priorPages?.length ?? 0;
+  const hasOlderHistory = historyBaseIndex > 0 || Boolean(priorGenerations?.cursor);
   const toolOutputs = useSessionsStore((state) => state.conversations[conversationId]?.toolOutputs);
   const toolStartedAt = useSessionsStore(
     (state) => state.conversations[conversationId]?.toolStartedAt
@@ -155,6 +161,7 @@ export function ChatSessionTimeline({
     items: TimelineItem[];
     toolEnded?: Record<string, 'ok' | 'error'>;
     toolTodos?: Record<string, TodoItem[]>;
+    priorPages?: typeof priorPages;
   }>({
     conversationId: '',
     items: [],
@@ -165,7 +172,9 @@ export function ChatSessionTimeline({
     }
     // 正文还在流时工具收口了（agy 的工具与正文同在一条流式 assistant 里）：只补正文会漏掉卡片转完成
     const patched =
-      cache.current.toolEnded === toolEnded && cache.current.toolTodos === toolTodos
+      cache.current.toolEnded === toolEnded &&
+      cache.current.toolTodos === toolTodos &&
+      cache.current.priorPages === priorPages
         ? patchStreamingTimeline(cache.current.items, messages, running, historyBaseIndex)
         : null;
     const items =
@@ -181,11 +190,13 @@ export function ChatSessionTimeline({
         toolStartedAt,
         pendingApprovals,
         secretarySession,
+        priorGenerations: priorPages,
         interrupted,
       });
     cache.current.items = items;
     cache.current.toolEnded = toolEnded;
     cache.current.toolTodos = toolTodos;
+    cache.current.priorPages = priorPages;
     return items;
   }, [
     compaction,
@@ -198,6 +209,7 @@ export function ChatSessionTimeline({
     interrupted,
     messages,
     pendingApprovals,
+    priorPages,
     running,
     secretarySession,
     toolEnded,
@@ -211,6 +223,7 @@ export function ChatSessionTimeline({
     started,
     sessionFile,
     messages,
+    priorGenerations,
     spawning,
     status,
     historyLoadAttempted,
@@ -310,14 +323,14 @@ export function ChatSessionTimeline({
     anchorRef.current = el ? { height: el.scrollHeight, top: el.scrollTop } : null;
     void useSessionsStore.getState().loadOlderHistory(conversationId);
   }, [conversationId, timelineRef]);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: historyBaseIndex 变小 = 旧页已渲染，此时才补偿
+  // biome-ignore lint/correctness/useExhaustiveDependencies: historyBaseIndex 变小或 priorPagesCount 变大 = 旧页已渲染，此时才补偿
   useLayoutEffect(() => {
     const el = timelineRef.current?.getScroller();
     const anchor = anchorRef.current;
     if (!el || !anchor) return;
     anchorRef.current = null;
     el.scrollTop = anchor.top + (el.scrollHeight - anchor.height);
-  }, [historyBaseIndex]);
+  }, [historyBaseIndex, priorPagesCount]);
 
   return (
     <MarkdownLinkContext.Provider value={markdownLinkContext}>
@@ -370,9 +383,9 @@ export function ChatSessionTimeline({
               : undefined
           }
           historyLoading={historyLoading}
-          hasOlder={historyBaseIndex > 0}
-          olderCursor={historyBaseIndex}
-          onStartReached={historyBaseIndex > 0 ? loadOlder : undefined}
+          hasOlder={hasOlderHistory}
+          olderCursor={`${historyBaseIndex}:${priorPagesCount}`}
+          onStartReached={hasOlderHistory ? loadOlder : undefined}
           searchQuery={findOpen ? findQuery : ''}
           quotable={quotable}
           activeHit={findOpen ? (findHits[findIndex] ?? null) : null}

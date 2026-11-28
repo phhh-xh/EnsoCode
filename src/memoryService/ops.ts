@@ -223,6 +223,68 @@ export async function dispatchMemoryOp(op: string, args: unknown): Promise<unkno
         return result;
       });
     }
+    case 'list-rules': {
+      const input = (args ?? {}) as {
+        spaceIds?: unknown;
+        unitTypes?: unknown;
+        limit?: unknown;
+      };
+      const spaceIds = Array.isArray(input.spaceIds)
+        ? input.spaceIds.filter(
+            (item): item is string => typeof item === 'string' && item.length > 0
+          )
+        : [];
+      const unitTypes = Array.isArray(input.unitTypes)
+        ? input.unitTypes.filter(
+            (item): item is string => typeof item === 'string' && item.length > 0
+          )
+        : ['preference', 'learning'];
+      const limit =
+        typeof input.limit === 'number' && Number.isFinite(input.limit)
+          ? Math.min(100, Math.max(1, Math.floor(input.limit)))
+          : 20;
+      if (spaceIds.length === 0 || unitTypes.length === 0) return [];
+      return withDb((db) => {
+        const spacePh = spaceIds.map(() => '?').join(',');
+        const unitPh = unitTypes.map(() => '?').join(',');
+        const rows = db
+          .prepare(
+            `SELECT id, space_id, unit_type, title, content, importance, updated_at
+             FROM memories
+             WHERE is_latest = 1
+               AND lifecycle_state = 'active'
+               AND space_id IN (${spacePh})
+               AND unit_type IN (${unitPh})`
+          )
+          .all(...spaceIds, ...unitTypes) as Array<{
+          id: string;
+          space_id: string;
+          unit_type: string;
+          title: string;
+          content: string;
+          importance: number;
+          updated_at: string;
+        }>;
+        const spaceOrder = new Map(spaceIds.map((id, index) => [id, index]));
+        return rows
+          .map((row) => ({
+            id: row.id,
+            spaceId: row.space_id,
+            unitType: row.unit_type,
+            title: row.title,
+            content: row.content,
+            importance: row.importance,
+            updatedAt: Date.parse(row.updated_at) || 0,
+          }))
+          .sort(
+            (a, b) =>
+              (spaceOrder.get(a.spaceId) ?? 999) - (spaceOrder.get(b.spaceId) ?? 999) ||
+              b.importance - a.importance ||
+              b.updatedAt - a.updatedAt
+          )
+          .slice(0, limit);
+      });
+    }
     case 'detail':
       return withDb((db) => getMemoryDetail(db, (args as { id: string }).id));
     case 'archive': {

@@ -1248,7 +1248,12 @@ export class BotSessionHost {
         if (!delivery) {
           const slot = this.slots.get(id);
           if (event.type === 'delivery-rejected' && slot?.prompt?.id === event.deliveryId)
-            this.rejectPrompt(id, slot, slot.prompt, event.reason);
+            this.rejectPrompt(
+              id,
+              slot,
+              slot.prompt,
+              event.reason === 'turn-stuck' ? 'turn-stuck' : undefined
+            );
           return;
         }
         const seen = this.pendingSteers.get(delivery);

@@ -21,7 +21,7 @@ export const HIDDEN = '***';
 const SECRET_NAME =
   /api[-_]?key|secret|passw(?:or)?d|credential|authorization|cookie|token$|(?:^|[-_])token(?:[-_]|$)|^env$/i;
 /** 名字里含 secret 字样但不是密钥的字段（`secret` 子串匹配会误伤） */
-const NOT_SECRET_FIELDS = new Set(['secretaryEnabled']);
+const NOT_SECRET_FIELDS = new Set(['secretaryEnabled', 'secretaryContextGenerationsEnabled']);
 const PATH_OR_EXEC_NAME = /^(?:path|dir|root|cwd|command|args)$|(?:Path|Dir|Root)$/;
 const UNSAFE_SEGMENT = new Set(['__proto__', 'prototype', 'constructor']);
 
@@ -288,6 +288,8 @@ function validateField(field: string, value: unknown): string | null {
   if (field === 'language' && value !== 'en' && value !== 'zh') return 'language must be en or zh';
   if (field === 'longCacheRetention' && typeof value !== 'boolean')
     return 'longCacheRetention must be a boolean';
+  if (field === 'secretaryContextGenerationsEnabled' && typeof value !== 'boolean')
+    return 'secretaryContextGenerationsEnabled must be a boolean';
   if (field === 'quoteSelectionButton' && typeof value !== 'boolean')
     return 'quoteSelectionButton must be a boolean';
   if (field === 'learnButtonEnabled' && typeof value !== 'boolean')

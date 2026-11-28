@@ -96,6 +96,7 @@ import { builtinRelayUrl, dialRelayUrl, publicRelayUrl } from './pairBuiltinRela
 import { PAIR_DIRECT_ENABLED, PAIR_STUN_SERVERS } from './pairDirectConfig';
 import { isDirectPeerAvailable, mainDirectPeerFactory, preloadDirectPeer } from './pairDirectPeer';
 import { nodeFrameCodec } from './pairFrameCodec';
+import { currentPageAnswer, priorCursorAnswer } from './pairHistoryFrames';
 import { flushChangedMeta, requestPairMeta } from './pairMetaFlush';
 import { startPairNetworkWatch } from './pairNetworkWatch';
 import {
@@ -291,6 +292,16 @@ export interface PairAgentBridge {
   respondApproval(sessionId: string, requestId: string, decision: ApprovalDecision): void;
   respondAsk(sessionId: string, requestId: string, answer: string): void;
   spawn(request: AgentSpawnRequest): Promise<{ ok: boolean; error?: string }>;
+  /** 跨代分页读取（旧代 jsonl 由 Main 推导与校验边界） */
+  readPriorGenerationPage?(
+    sessionId: string,
+    cursor: { genIndex: number; beforeIndex?: number }
+  ): Promise<
+    | { ok: true; entries: unknown[]; cursor: { genIndex: number; beforeIndex?: number } | null }
+    | { ok: false; code: 'not-found' | 'unavailable'; error: string }
+  >;
+  /** 返回某会话最近旧代的起始游标；未换代返回 null */
+  priorGenerationInitialCursor?(sessionId: string): { genIndex: number } | null;
   /** 会话树里还有活：子代理 / coworker 在跑或等你、后台命令在跑（回合结束后也可能） */
   backgroundWorkRunning?(sessionId: string): boolean;
 }
@@ -1131,12 +1142,40 @@ async function handleFrame(
       // 结构已校验；交 renderer 的会话 store / electronAPI（与桌面同一路径）
       onQueueAction?.(command);
       break;
-    case 'history':
+    case 'history': {
       // 只服务当前订阅会话：其它会话的正文本就不该下发
       if (command.sessionId !== conn.subscribedId) return;
+      const revision = conn.syncRevision;
+      const subscribedId = conn.subscribedId;
+      const rawCursor = command.cursor;
+      const validCursor =
+        rawCursor &&
+        typeof rawCursor.genIndex === 'number' &&
+        Number.isInteger(rawCursor.genIndex) &&
+        rawCursor.genIndex >= 0 &&
+        (rawCursor.beforeIndex === undefined ||
+          (typeof rawCursor.beforeIndex === 'number' &&
+            Number.isInteger(rawCursor.beforeIndex) &&
+            rawCursor.beforeIndex >= 0))
+          ? {
+              genIndex: rawCursor.genIndex,
+              ...(rawCursor.beforeIndex !== undefined
+                ? { beforeIndex: rawCursor.beforeIndex }
+                : {}),
+            }
+          : null;
+      const readPage = agentBridge?.readPriorGenerationPage;
+      if (validCursor && readPage) {
+        const current = () => conn.syncRevision === revision && conn.subscribedId === subscribedId;
+        void priorCursorAnswer(subscribedId, validCursor, (cursor) =>
+          readPage(subscribedId, cursor)
+        ).then((frame) => send(conn, frame, current));
+        break;
+      }
       conn.pendingHistory = command.beforeIndex;
       snapshotForPhone(command.sessionId, false);
       break;
+    }
     case 'bot-catalog-request':
     case 'bot-send':
     case 'bot-chat-open':
@@ -1608,16 +1647,20 @@ function forwardSnapshot(event: RendererAgentEvent): void {
     if (conn.pendingHistory !== undefined) {
       if (session && Array.isArray(session.messages)) {
         const page = sliceHistory(session.messages, conn.pendingHistory);
-        void send(
-          conn,
-          {
-            type: 'history',
-            sessionId: subscribedId,
-            baseIndex: page.baseIndex,
-            messages: page.messages,
-          },
-          () => conn.syncRevision === revision && conn.subscribedId === subscribedId
+        const readPage = agentBridge?.readPriorGenerationPage;
+        const answer = currentPageAnswer(
+          subscribedId,
+          page,
+          page.messages.length === 0
+            ? (agentBridge?.priorGenerationInitialCursor?.(subscribedId) ?? null)
+            : null,
+          readPage ? (cursor) => readPage(subscribedId, cursor) : undefined
         );
+        const current = () => conn.syncRevision === revision && conn.subscribedId === subscribedId;
+        void send(conn, answer.history, current);
+        void answer.prior?.then((frame) => {
+          if (frame) void send(conn, frame, current);
+        });
       }
       conn.pendingHistory = undefined;
       if (!(sync?.sessionId === subscribedId && !sync.answered)) {
@@ -1644,6 +1687,42 @@ function forwardSnapshot(event: RendererAgentEvent): void {
         },
         () => isCurrentSync(conn, sync.revision, subscribedId)
       );
+      // 首屏/重连时附带旧代游标；当前代不足一页（含 0 条）自动补发上一代尾部窗口避免空屏
+      const initialPriorCursor = agentBridge?.priorGenerationInitialCursor?.(subscribedId) ?? null;
+      if (initialPriorCursor && !conn.deskGuest) {
+        const currentCount = Array.isArray(session?.messages) ? session.messages.length : 0;
+        if (currentCount < 8 && agentBridge?.readPriorGenerationPage) {
+          void agentBridge
+            .readPriorGenerationPage(subscribedId, initialPriorCursor)
+            .then((result) => {
+              if (!result.ok) return;
+              void send(
+                conn,
+                {
+                  type: 'prior-history',
+                  sessionId: subscribedId,
+                  entries: result.entries,
+                  cursor: result.cursor,
+                  replace: true,
+                },
+                () => isCurrentSync(conn, sync.revision, subscribedId)
+              );
+            })
+            .catch(() => {});
+        } else {
+          void send(
+            conn,
+            {
+              type: 'prior-history',
+              sessionId: subscribedId,
+              entries: [],
+              cursor: initialPriorCursor,
+              replace: true,
+            },
+            () => isCurrentSync(conn, sync.revision, subscribedId)
+          );
+        }
+      }
       continue;
     }
 
@@ -1708,6 +1787,33 @@ function forwardSnapshot(event: RendererAgentEvent): void {
       { type: 'agent-event', event: narrowed },
       () => conn.syncRevision === revision && conn.subscribedId === subscribedId
     );
+  }
+}
+
+/**
+ * 秘书换代后手机端收口：
+ * - 补一条 messages-truncated(length 0)：不认 session-rotated 的旧手机 / 旧 iOS 壳也会清空当前代，
+ *   新一代从 index 0 写入时不会和旧代残留混排（新手机已把它们挪进旧代，裁剪是空操作）；
+ * - 给订阅着的新手机按权威记录重推上一代尾页与游标（replace），只加载过半截历史时也不会缺口。
+ */
+function afterSessionRotated(event: RendererAgentEvent, sessionId: string): void {
+  const identity = (event as { identity?: unknown }).identity;
+  forwardAgentEvent({
+    type: 'messages-truncated',
+    identity,
+    seq: (event as { seq?: number }).seq ?? 0,
+    length: 0,
+  } as unknown as RendererAgentEvent);
+  const cursor = agentBridge?.priorGenerationInitialCursor?.(sessionId) ?? null;
+  const readPage = agentBridge?.readPriorGenerationPage;
+  if (!cursor || !readPage) return;
+  for (const conn of connections.values()) {
+    if (!conn.phoneOnline || conn.deskGuest || conn.subscribedId !== sessionId) continue;
+    const revision = conn.syncRevision;
+    const current = () => conn.syncRevision === revision && conn.subscribedId === sessionId;
+    void priorCursorAnswer(sessionId, cursor, (next) => readPage(sessionId, next)).then((frame) => {
+      if (frame.type === 'prior-history') void send(conn, { ...frame, replace: true }, current);
+    });
   }
 }
 
@@ -1787,6 +1893,7 @@ export function forwardAgentEvent(event: RendererAgentEvent): void {
       () => conn.syncRevision === revision && conn.subscribedId === subscribedId
     );
   }
+  if (e.type === 'session-rotated' && flatSessionId) afterSessionRotated(event, flatSessionId);
 }
 
 /** renderer 推来的目录/项目/provider（provider 已剥 apiKey/baseUrl） */

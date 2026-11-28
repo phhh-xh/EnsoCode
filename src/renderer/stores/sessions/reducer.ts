@@ -9,6 +9,9 @@ import {
   type AskRequestInfo,
   type BackgroundTaskInfo,
   type DispatchMainEvent,
+  type PriorGenerationCursor,
+  type PriorGenerationEntry,
+  type PriorGenerationsState,
   type ProjectedMessage,
   type RendererAgentEvent,
   type SessionIdentity,
@@ -200,6 +203,20 @@ export function applyHistoryPage(
   };
 }
 
+/** 跨代上滑分页：将旧代页面前置到 priorGenerations，更新下一页游标（null 表示已到最早一代）。 */
+export function prependPriorGenerationPage(
+  state: SessionProjection,
+  entries: readonly PriorGenerationEntry[],
+  cursor: PriorGenerationCursor | null
+): SessionProjection {
+  const existing = state.priorGenerations?.pages ?? [];
+  const pages = entries.length > 0 ? [...entries, ...existing] : existing;
+  return {
+    ...state,
+    priorGenerations: { pages, cursor },
+  };
+}
+
 function omitKeys<T>(
   record: Record<string, T>,
   keys: ReadonlySet<string | undefined>
@@ -298,6 +315,8 @@ export interface SessionProjection {
   toolTodos?: Record<string, TodoItem[]>;
   /** 当前权威消息对应的 worker 绝对起点；全量快照缺省 */
   historyBaseIndex?: number;
+  /** 换代前的旧代消息段（含 kind:'generation' 分隔项）与上翻游标；与当前代 messages 分开存放，不持久化 */
+  priorGenerations?: PriorGenerationsState;
   /** 上滑翻页在途；不持久化 */
   historyLoading?: boolean;
   /** 仅父会话：Plan 模式（worker jsonl 折叠结果的投影；未 spawn 时记期望的开关） */
@@ -430,6 +449,7 @@ export function applyAgentEvent(
       toolEnded: continuingRun ? omitKeys(state.toolEnded ?? {}, completedTools) : {},
       toolTodos: continuingRun ? omitKeys(state.toolTodos ?? {}, completedTools) : {},
       historyBaseIndex: keepPrefix ? localBase : snapBase > 0 ? snapBase : undefined,
+      ...(state.priorGenerations ? { priorGenerations: state.priorGenerations } : {}),
       ...(snapshot.planState ? { planState: snapshot.planState } : {}),
     };
   }
@@ -490,6 +510,33 @@ export function applyAgentEvent(
   switch (event.type) {
     case 'request-body':
       return { ...current, lastSeq: event.seq, requestBody: event.usage };
+    case 'session-rotated': {
+      // 原地换代：把当前代权威消息并入 priorGenerations 末尾并追加分隔行，再清空当前代，页面不闪空
+      const authoritative: ProjectedMessage[] = [];
+      const optimistic: TimelineMessage[] = [];
+      for (const message of current.messages) {
+        if (message.optimistic) optimistic.push(message);
+        else authoritative.push(message);
+      }
+      const existingPages = current.priorGenerations?.pages ?? [];
+      const nextPages: PriorGenerationEntry[] = [
+        ...existingPages,
+        ...authoritative,
+        { kind: 'generation', at: event.at },
+      ];
+      return {
+        ...current,
+        lastSeq: event.seq,
+        messages: optimistic,
+        customEntries: [],
+        historyBaseIndex: undefined,
+        priorGenerations: {
+          pages: nextPages,
+          cursor: current.priorGenerations?.cursor ?? null,
+        },
+        requestBody: undefined,
+      };
+    }
     case 'parent-ready':
     case 'child-ready':
       return {
@@ -530,7 +577,7 @@ export function applyAgentEvent(
                   {
                     ...message,
                     deliveryRejected: true,
-                    ...(event.reason ? { rejectedReason: event.reason } : {}),
+                    ...(event.reason === 'turn-stuck' ? { rejectedReason: event.reason } : {}),
                   },
                 ]
             : [message]

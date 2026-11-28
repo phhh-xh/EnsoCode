@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   type GitResult,
@@ -109,12 +110,20 @@ describe('parsePorcelainZ', () => {
     });
   });
 
-  it('超过上限时只列前 N 条，总数照实给', () => {
+  it('超过上限时只列前 N 条，总数照实给，并支持 offset/limit 翻页与截断提示', () => {
     const entries = Array.from({ length: REPO_STATUS_FILE_MAX + 5 }, (_, index) => `?? f${index}`);
     const parsed = parsePorcelainZ(`${entries.join('\0')}\0`);
     expect(parsed.total).toBe(REPO_STATUS_FILE_MAX + 5);
     expect(parsed.files).toHaveLength(REPO_STATUS_FILE_MAX);
     expect(parsed.files[0]).toEqual({ status: '??', path: 'f0' });
+    expect(parsed.hasMore).toBe(true);
+    expect(parsed.note).toBe(`共 ${REPO_STATUS_FILE_MAX + 5} 条，已显示 ${REPO_STATUS_FILE_MAX}`);
+
+    const page2 = parsePorcelainZ(`${entries.join('\0')}\0`, REPO_STATUS_FILE_MAX, 10);
+    expect(page2.offset).toBe(REPO_STATUS_FILE_MAX);
+    expect(page2.files).toHaveLength(5);
+    expect(page2.files[0]).toEqual({ status: '??', path: `f${REPO_STATUS_FILE_MAX}` });
+    expect(page2.hasMore).toBeUndefined();
   });
 });
 
@@ -232,5 +241,44 @@ describe('readRepoStatus', () => {
     await readRepoStatus(deps, { root: '/repo/alpha', limit: 0 });
     expect(seen[0]).toContain('-n20');
     expect(seen[1]).toContain('-n1');
+  });
+
+  it('worktree 超过一页时主检出与本次查询的 worktree 在前，其余新建的优先，并给出总数', async () => {
+    // git 按 .git/worktrees 目录名列出：最新建的 wt-12 排在最后
+    const linked = Array.from({ length: 12 }, (_, i) => `/wt/wt-${String(i + 1).padStart(2, '0')}`);
+    const porcelain = ['/repo/alpha', ...linked]
+      .map((p) => `worktree ${p}\nHEAD 1234567\nbranch refs/heads/${path.basename(p)}`)
+      .join('\n\n');
+    const listing = (cwd: string, args: readonly string[]) =>
+      args[0] === 'worktree' ? ok(`${porcelain}\n`) : standard(cwd, args);
+    const deps = makeDeps({
+      repos: {
+        '/repo/alpha': { common: '/repo/alpha/.git' },
+        '/wt/wt-01': { common: '/repo/alpha/.git' },
+      },
+      extra: listing,
+    });
+    deps.mtimeMs = (target) => {
+      const match = /wt-(\d+)\/\.git$/u.exec(target);
+      return match ? Number(match[1]) * 1000 : null;
+    };
+
+    const fromMain = await readRepoStatus(deps, { root: '/repo/alpha', limit: 5 });
+    expect(fromMain.ok).toBe(true);
+    if (!fromMain.ok) return;
+    const shown = fromMain.snapshot.worktrees.map((w) => w.path);
+    expect(shown).toHaveLength(10);
+    expect(shown[0]).toBe('/repo/alpha');
+    expect(shown[1]).toBe('/wt/wt-12');
+    expect(shown).not.toContain('/wt/wt-01');
+    expect(fromMain.snapshot.worktreesMeta).toMatchObject({ total: 13, hasMore: true });
+
+    // 从最老的 worktree 查：它自己必在第一页
+    const fromOldest = await readRepoStatus(deps, { root: '/wt/wt-01', limit: 5 });
+    expect(fromOldest.ok && fromOldest.snapshot.worktrees.map((w) => w.path).slice(0, 3)).toEqual([
+      '/repo/alpha',
+      '/wt/wt-01',
+      '/wt/wt-12',
+    ]);
   });
 });

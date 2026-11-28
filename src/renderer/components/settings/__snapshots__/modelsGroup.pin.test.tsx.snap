@@ -853,7 +853,17 @@ exports[`模型与服务商组设置迁移前后行为一致 > 每个控件的�
     "effects": [
       {
         "api": [],
-        "store": {},
+        "store": {
+          "subagentModels": [
+            {
+              "description": "cheap",
+              "enabled": false,
+              "id": "sub",
+              "modelId": "fast",
+              "providerId": "api",
+            },
+          ],
+        },
       },
     ],
     "kind": "switch",

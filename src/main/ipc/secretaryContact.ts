@@ -6,6 +6,7 @@ import {
   type ContactRouteClaim,
   findRouteConflict,
 } from '@shared/secretary/contact';
+import { buildRecapTurns } from '@shared/secretary/recap';
 import { projectReadableMessages } from '@shared/secretary/transcript';
 import type { RendererAgentEvent } from '@shared/types/agent';
 import type { DemandThreadSource } from '@shared/types/demandThreads';
@@ -394,24 +395,41 @@ export function createSecretaryContacts(deps: SecretaryContactDeps): SecretaryCo
       secretaryName: () => nameOf(ctx),
       secretaryConversationId: () => resolveTarget(delivery),
       startConversation: () => delivery.startConversation(),
-      // /last：读秘书会话的 jsonl 尾窗，按轮切好交回去；只读，不进会话
+      // /last：读秘书会话的 jsonl 尾窗，按轮切好交回去；新一代尚无真实对话时回落读上一代
       recentTurns: async (rounds) => {
         const conversationId = resolveTarget(delivery);
         if (!conversationId) return [];
         const conversation = delivery
           .conversations()
           .find((candidate) => candidate.conversationId === conversationId);
-        const page = await readSessionHistoryFile(conversation?.sessionFile);
-        if (!page.ok) return [];
-        // 一轮两条消息，留出系统回传与工具轮被跳过的余量
-        const readable = projectReadableMessages(page.messages, {
-          limit: rounds * 4 + 8,
-          baseIndex: page.baseIndex,
-        });
-        return readable.messages.map((message) => ({
-          role: message.role,
-          text: redactSecrets(message.text),
-        }));
+        const filesToTry = [
+          ...(conversation?.sessionFile ? [conversation.sessionFile] : []),
+          ...[...(conversation?.previousSessionFiles ?? [])].reverse().slice(0, 1),
+        ];
+        const collected: { role: 'user' | 'assistant'; text: string }[] = [];
+        for (const file of filesToTry) {
+          const page = await readSessionHistoryFile(file);
+          if (!page.ok || page.messages.length === 0) continue;
+          const readable = projectReadableMessages(page.messages, {
+            limit: rounds * 4 + 8,
+            baseIndex: page.baseIndex,
+          });
+          const mapped = readable.messages.map((message) => ({
+            role: message.role,
+            text: redactSecrets(message.text),
+          }));
+          if (mapped.length > 0) {
+            // 当前代已有足够可读消息就直接返回；若刚换代为空则继续回落上一代
+            if (collected.length === 0) {
+              collected.push(...mapped);
+              if (buildRecapTurns(collected, rounds).length > 0) break;
+            } else {
+              collected.unshift(...mapped);
+              break;
+            }
+          }
+        }
+        return collected;
       },
       // 手机发来的话进秘书会话：worker 已被回收就先恢复，再投
       deliver: (conversationId, text, options) =>

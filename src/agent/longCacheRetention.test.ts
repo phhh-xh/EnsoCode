@@ -3,7 +3,14 @@ import type { Api, Model, SimpleStreamOptions } from '@earendil-works/pi-ai';
 import { streamSimple as anthropicStream } from '@earendil-works/pi-ai/api/anthropic-messages';
 import { streamSimple as completionsStream } from '@earendil-works/pi-ai/api/openai-completions';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { installLongCacheRetention, withLongCacheRetention } from './longCacheRetention';
+import {
+  clearSecretaryCacheSessions,
+  installLongCacheRetention,
+  isSecretaryCacheSession,
+  registerSecretaryCacheSession,
+  unregisterSecretaryCacheSession,
+  withLongCacheRetention,
+} from './longCacheRetention';
 
 const base = {
   reasoning: false,
@@ -60,6 +67,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  clearSecretaryCacheSessions();
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
 });
@@ -159,5 +167,52 @@ describe('installLongCacheRetention', () => {
     runtime.streamSimple(anthropic, context, session);
     runtime.streamSimple(completions, context, session);
     expect(seen.map((options) => options?.cacheRetention)).toEqual(['long', 'long', undefined]);
+  });
+
+  it('全局关闭时秘书直连与虚拟模型分派均启用 long，移除后恢复，普通会话和显式 none 不变', () => {
+    const seen: Array<SimpleStreamOptions | undefined> = [];
+    const record = (_model: Model<Api>, _context: unknown, options?: SimpleStreamOptions) => {
+      seen.push(options);
+      return undefined as never;
+    };
+    const secretaryAgent = { streamFunction: record };
+    const normalAgent = { streamFunction: record };
+    const runtime = { stream: record, streamSimple: record };
+    const globalEnabled = () => false;
+
+    registerSecretaryCacheSession('sec-pi-1');
+    installLongCacheRetention(secretaryAgent, () => true);
+    installLongCacheRetention(normalAgent, globalEnabled);
+    installLongCacheRetention(
+      runtime,
+      (options) => globalEnabled() || isSecretaryCacheSession(options?.sessionId)
+    );
+
+    const secOptions = { ...session, sessionId: 'sec-pi-1' };
+    const normalOptions = { ...session, sessionId: 'normal-pi-1' };
+
+    // 秘书直连 Anthropic -> long
+    secretaryAgent.streamFunction(anthropic, context, secOptions);
+    // 秘书虚拟模型分派到 Anthropic -> runtime 按 pi sessionId 命中 -> long
+    runtime.streamSimple(anthropic, context, secOptions);
+    // 显式 none（压缩请求）-> 不改动
+    secretaryAgent.streamFunction(anthropic, context, { ...secOptions, cacheRetention: 'none' });
+    runtime.streamSimple(anthropic, context, { ...secOptions, cacheRetention: 'none' });
+    // 普通会话 -> 不变
+    normalAgent.streamFunction(anthropic, context, normalOptions);
+    runtime.streamSimple(anthropic, context, normalOptions);
+    // 移除 sessionId 后 -> 不再是 long
+    unregisterSecretaryCacheSession('sec-pi-1');
+    runtime.streamSimple(anthropic, context, secOptions);
+
+    expect(seen.map((options) => options?.cacheRetention)).toEqual([
+      'long',
+      'long',
+      'none',
+      'none',
+      undefined,
+      undefined,
+      undefined,
+    ]);
   });
 });

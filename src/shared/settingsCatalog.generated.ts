@@ -265,6 +265,13 @@ export const GENERATED_SETTINGS_CATALOG: readonly SettingsSearchEntry[] = [
       'A global agent that watches your projects and sessions, creates sessions to do the work, and reports results back to you.',
   },
   {
+    id: 'experimental.secretaryContextGenerations',
+    category: 'experimental',
+    title: 'Context generations',
+    description:
+      'Start a fresh context file with a brief when the secretary conversation grows large, keeping a continuous timeline across generations. Turn off to fall back to standard compaction; existing history remains readable.',
+  },
+  {
     id: 'general.activeRetentionMinutes',
     category: 'runtime',
     title: 'Keep in Active after last message',

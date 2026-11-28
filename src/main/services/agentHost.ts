@@ -555,7 +555,7 @@ export function startAgentWorker(options: { restartCheckpointFile?: string } = {
         pluginAgents.settle(event)
       )
         return;
-      if (settleCompletion(event) || settleChoice(event)) return;
+      if (settleCompletion(event) || settleChoice(event) || settleRotateSession(event)) return;
       onEvent?.(event);
     }
   });
@@ -603,6 +603,10 @@ export function startAgentWorker(options: { restartCheckpointFile?: string } = {
     for (const [id, p] of pendingCompletions) {
       pendingCompletions.delete(id);
       p.reject(new Error('agent worker exited'));
+    }
+    for (const [id, p] of pendingRotations) {
+      pendingRotations.delete(id);
+      p.resolve({ ok: false, error: 'agent worker exited' });
     }
     for (const [id, p] of pendingChoices) {
       pendingChoices.delete(id);
@@ -2546,7 +2550,9 @@ export function promptSession(
   /** 带新消息的断点续跑：worker 先移出未完成的最后一条 assistant 再 prompt */
   resume?: true,
   /** owner 亲手输入（应用输入框、配对手机、秘书联系方式里绑定的本人）；Main 自己的投递不带 */
-  ownerInput?: true
+  ownerInput?: true,
+  /** 忙即拒：用于 <secretary-flush>，不排队直接回 delivery-rejected('busy') */
+  rejectWhenBusy?: true
 ): { ok: boolean; error?: string } {
   return sendAgentCommand({
     type: 'prompt',
@@ -2556,7 +2562,66 @@ export function promptSession(
     deliveryId,
     ...(resume ? { resume } : {}),
     ...(ownerInput ? { ownerInput } : {}),
+    ...(rejectWhenBusy ? { rejectWhenBusy } : {}),
     ...instanceField(identity),
+  });
+}
+
+export interface RotateSessionResult {
+  ok: boolean;
+  sessionFile?: string;
+  previousSessionFile?: string;
+  at?: number;
+  error?: string;
+}
+
+const pendingRotations = new Map<string, { resolve: (result: RotateSessionResult) => void }>();
+
+function settleRotateSession(event: AgentWorkerEvent): boolean {
+  if (event.type !== 'rotate-session-result') return false;
+  const pending = pendingRotations.get(event.requestId);
+  if (!pending) return true;
+  pendingRotations.delete(event.requestId);
+  pending.resolve({
+    ok: event.ok,
+    ...(event.sessionFile ? { sessionFile: event.sessionFile } : {}),
+    ...(event.previousSessionFile ? { previousSessionFile: event.previousSessionFile } : {}),
+    ...(event.at !== undefined ? { at: event.at } : {}),
+    ...(event.error ? { error: event.error } : {}),
+  });
+  return true;
+}
+
+/** 就地换代：通知 worker 切到新 sessionFile 并写入隐藏简报，返回新文件路径或 busy/error */
+export function rotateSession(
+  identity: SessionIdentity,
+  brief: string,
+  timeoutMs = 15_000
+): Promise<RotateSessionResult> {
+  const requestId = randomUUID();
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      if (!pendingRotations.delete(requestId)) return;
+      resolve({ ok: false, error: 'rotate-session timed out' });
+    }, timeoutMs);
+    timer.unref?.();
+    pendingRotations.set(requestId, {
+      resolve: (result) => {
+        clearTimeout(timer);
+        resolve(result);
+      },
+    });
+    const posted = sendAgentCommand({
+      type: 'rotate-session',
+      identity,
+      requestId,
+      brief,
+    });
+    if (!posted.ok) {
+      pendingRotations.delete(requestId);
+      clearTimeout(timer);
+      resolve({ ok: false, error: posted.error ?? 'post failed' });
+    }
   });
 }
 

@@ -237,6 +237,7 @@ import { searchFiles } from '../services/fileSearch';
 import { SecretaryStore } from '../services/secretary/store';
 import {
   abortRootFromMain,
+  applySessionRotated,
   getAgentService,
   getSourceAuthorityRegistry,
   registerAgentHandlers,
@@ -1839,6 +1840,38 @@ describe('agent IPC Main identity boundary', () => {
       ])('%s 时不读盘', async (_case, file) => {
         await expect(read(file())).resolves.toBeNull();
       });
+    });
+  });
+
+  describe('秘书换代：权威记录跟 worker 的 session-rotated 事件走', () => {
+    const rotated = (sessionFile: string, parent = false) =>
+      ({
+        type: 'session-rotated',
+        identity: parent
+          ? { sessionId: 'child', generation: 'g1', parent: { sessionId: 'sec', generation: 'g1' } }
+          : { sessionId: 'sec', generation: 'g1' },
+        seq: 3,
+        sessionFile,
+        at: 1,
+      }) as unknown as Parameters<typeof applySessionRotated>[0];
+
+    it('事件到达即切换权威文件（rotate 命令回包超时也不影响）', () => {
+      const rotate = vi
+        .spyOn(getSourceAuthorityRegistry()!, 'rotateSessionFile')
+        .mockReturnValue(true);
+      const next = '/tmp/agent/sessions/2026-11-02T00-00-00-000Z_next.jsonl';
+      expect(applySessionRotated(rotated(next))).toBe(true);
+      expect(rotate).toHaveBeenCalledWith('sec', next);
+    });
+
+    it('sessions 目录外、enso- 子会话日志或子会话身份的换代事件一律不落', () => {
+      const rotate = vi.spyOn(getSourceAuthorityRegistry()!, 'rotateSessionFile');
+      expect(applySessionRotated(rotated('/etc/passwd.jsonl'))).toBe(false);
+      expect(applySessionRotated(rotated('/tmp/agent/sessions/enso-child.jsonl'))).toBe(false);
+      expect(
+        applySessionRotated(rotated('/tmp/agent/sessions/2026-11-02T00-00-00-000Z_x.jsonl', true))
+      ).toBe(false);
+      expect(rotate).not.toHaveBeenCalled();
     });
   });
 

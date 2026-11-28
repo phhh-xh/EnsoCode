@@ -348,8 +348,10 @@ async function probe(container: HTMLElement, { pressGroups = false } = {}): Prom
   const out: Control[] = [];
   const find = (sel: string) => [...container.querySelectorAll(sel)] as HTMLElement[];
 
-  for (const el of find('[role="switch"], [role="checkbox"]')) {
-    if (el.hasAttribute('disabled')) continue;
+  const switchCount = find('[role="switch"], [role="checkbox"]').length;
+  for (let i = 0; i < switchCount; i += 1) {
+    const el = find('[role="switch"], [role="checkbox"]')[i];
+    if (!el || el.hasAttribute('disabled')) continue;
     out.push({
       row: rowOf(el),
       kind: el.getAttribute('role') ?? '',

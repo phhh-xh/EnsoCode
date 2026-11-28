@@ -993,7 +993,33 @@ exports[`应用组设置迁移前后行为一致 > 展开所有折叠子项后�
     "effects": [
       {
         "api": [],
-        "store": {},
+        "store": {
+          "privacyMasking": {
+            "allow": [],
+            "custom": {
+              "action": "mask",
+              "rules": [],
+              "words": [],
+            },
+            "enabled": true,
+            "personal": {
+              "action": "mask",
+              "enabled": true,
+              "kinds": [
+                "email",
+                "phone",
+                "idCard",
+                "bankCard",
+                "ip",
+              ],
+            },
+            "secrets": {
+              "action": "mask",
+              "enabled": true,
+              "shape": false,
+            },
+          },
+        },
       },
     ],
     "kind": "checkbox",
@@ -1004,7 +1030,31 @@ exports[`应用组设置迁移前后行为一致 > 展开所有折叠子项后�
     "effects": [
       {
         "api": [],
-        "store": {},
+        "store": {
+          "privacyMasking": {
+            "allow": [],
+            "custom": {
+              "action": "mask",
+              "rules": [],
+              "words": [],
+            },
+            "enabled": true,
+            "personal": {
+              "action": "mask",
+              "enabled": true,
+              "kinds": [
+                "email",
+                "idCard",
+                "bankCard",
+              ],
+            },
+            "secrets": {
+              "action": "mask",
+              "enabled": true,
+              "shape": false,
+            },
+          },
+        },
       },
     ],
     "kind": "checkbox",
@@ -1015,7 +1065,31 @@ exports[`应用组设置迁移前后行为一致 > 展开所有折叠子项后�
     "effects": [
       {
         "api": [],
-        "store": {},
+        "store": {
+          "privacyMasking": {
+            "allow": [],
+            "custom": {
+              "action": "mask",
+              "rules": [],
+              "words": [],
+            },
+            "enabled": true,
+            "personal": {
+              "action": "mask",
+              "enabled": true,
+              "kinds": [
+                "email",
+                "phone",
+                "bankCard",
+              ],
+            },
+            "secrets": {
+              "action": "mask",
+              "enabled": true,
+              "shape": false,
+            },
+          },
+        },
       },
     ],
     "kind": "checkbox",
@@ -1026,7 +1100,31 @@ exports[`应用组设置迁移前后行为一致 > 展开所有折叠子项后�
     "effects": [
       {
         "api": [],
-        "store": {},
+        "store": {
+          "privacyMasking": {
+            "allow": [],
+            "custom": {
+              "action": "mask",
+              "rules": [],
+              "words": [],
+            },
+            "enabled": true,
+            "personal": {
+              "action": "mask",
+              "enabled": true,
+              "kinds": [
+                "email",
+                "phone",
+                "idCard",
+              ],
+            },
+            "secrets": {
+              "action": "mask",
+              "enabled": true,
+              "shape": false,
+            },
+          },
+        },
       },
     ],
     "kind": "checkbox",
@@ -1037,7 +1135,31 @@ exports[`应用组设置迁移前后行为一致 > 展开所有折叠子项后�
     "effects": [
       {
         "api": [],
-        "store": {},
+        "store": {
+          "privacyMasking": {
+            "allow": [],
+            "custom": {
+              "action": "mask",
+              "rules": [],
+              "words": [],
+            },
+            "enabled": true,
+            "personal": {
+              "action": "mask",
+              "enabled": true,
+              "kinds": [
+                "phone",
+                "idCard",
+                "bankCard",
+              ],
+            },
+            "secrets": {
+              "action": "mask",
+              "enabled": true,
+              "shape": false,
+            },
+          },
+        },
       },
     ],
     "kind": "checkbox",
@@ -1082,7 +1204,32 @@ exports[`应用组设置迁移前后行为一致 > 展开所有折叠子项后�
     "effects": [
       {
         "api": [],
-        "store": {},
+        "store": {
+          "privacyMasking": {
+            "allow": [],
+            "custom": {
+              "action": "mask",
+              "rules": [],
+              "words": [],
+            },
+            "enabled": true,
+            "personal": {
+              "action": "mask",
+              "enabled": false,
+              "kinds": [
+                "email",
+                "phone",
+                "idCard",
+                "bankCard",
+              ],
+            },
+            "secrets": {
+              "action": "mask",
+              "enabled": true,
+              "shape": false,
+            },
+          },
+        },
       },
     ],
     "kind": "switch",
@@ -1099,7 +1246,32 @@ exports[`应用组设置迁移前后行为一致 > 展开所有折叠子项后�
     "effects": [
       {
         "api": [],
-        "store": {},
+        "store": {
+          "privacyMasking": {
+            "allow": [],
+            "custom": {
+              "action": "mask",
+              "rules": [],
+              "words": [],
+            },
+            "enabled": true,
+            "personal": {
+              "action": "mask",
+              "enabled": true,
+              "kinds": [
+                "email",
+                "phone",
+                "idCard",
+                "bankCard",
+              ],
+            },
+            "secrets": {
+              "action": "mask",
+              "enabled": false,
+              "shape": false,
+            },
+          },
+        },
       },
     ],
     "kind": "switch",
@@ -1144,7 +1316,32 @@ exports[`应用组设置迁移前后行为一致 > 展开所有折叠子项后�
     "effects": [
       {
         "api": [],
-        "store": {},
+        "store": {
+          "privacyMasking": {
+            "allow": [],
+            "custom": {
+              "action": "mask",
+              "rules": [],
+              "words": [],
+            },
+            "enabled": true,
+            "personal": {
+              "action": "mask",
+              "enabled": true,
+              "kinds": [
+                "email",
+                "phone",
+                "idCard",
+                "bankCard",
+              ],
+            },
+            "secrets": {
+              "action": "mask",
+              "enabled": true,
+              "shape": true,
+            },
+          },
+        },
       },
     ],
     "kind": "switch",

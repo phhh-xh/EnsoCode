@@ -1220,7 +1220,10 @@ export function App() {
         newSessionHint={newSessionHint(chat.id)}
         newSessionBusy={botNewSessionBusy}
         hasOlder={Boolean(
-          subscribedId && view && view.messages.size > 0 && Math.min(...view.messages.keys()) > 0
+          subscribedId &&
+            view &&
+            ((view.messages.size > 0 && Math.min(...view.messages.keys()) > 0) ||
+              view.priorGenerations?.cursor)
         )}
         historyLoading={Boolean(subscribedId && historyPending.has(subscribedId))}
         onLoadOlder={() => subscribedId && clientRef.current?.requestHistory(subscribedId)}
@@ -1431,7 +1434,10 @@ export function App() {
             tabGroup={tabGroup}
             onSelectTab={setActiveId}
             hasOlder={Boolean(
-              activeId && view && view.messages.size > 0 && Math.min(...view.messages.keys()) > 0
+              activeId &&
+                view &&
+                ((view.messages.size > 0 && Math.min(...view.messages.keys()) > 0) ||
+                  view.priorGenerations?.cursor)
             )}
             historyLoading={Boolean(activeId && historyPending.has(activeId))}
             onLoadOlder={() => activeId && clientRef.current?.requestHistory(activeId)}

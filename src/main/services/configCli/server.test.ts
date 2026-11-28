@@ -518,6 +518,18 @@ describe('config CLI socket', () => {
       ok: true,
     });
     expect((await state()).secretaryEnabled).toBe(true);
+    expect(keys.get('secretaryContextGenerationsEnabled')).toMatchObject({
+      writable: true,
+      requiresRestart: false,
+      secret: false,
+    });
+    expect(
+      await config({ action: 'set', key: 'secretaryContextGenerationsEnabled', value: 'yes' })
+    ).toMatchObject({ ok: false });
+    expect(
+      await config({ action: 'set', key: 'secretaryContextGenerationsEnabled', value: true })
+    ).toEqual({ ok: true });
+    expect((await state()).secretaryContextGenerationsEnabled).toBe(true);
   });
 
   it('矛盾复核开关热生效：可写、不需要重启、不是密钥', async () => {

@@ -103,6 +103,7 @@ export {
   type PairControl,
   type PairDelegationState,
   type PairGroupEntry,
+  type PairPriorGenerationCursor,
   type PairSessionSync,
   type PairSyncCursor,
   PHONE_COMMAND_TYPES,
