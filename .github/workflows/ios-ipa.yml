@@ -1,0 +1,101 @@
+name: iOS IPA
+
+# 构建未签名的 iOS ipa 并传成 artifact：不导入证书/描述文件、不上传 TestFlight，装机前需自行重签。
+# 不是 PR 必需检查；PR 只在动到 iOS 壳及其前端时跑，main 上还覆盖被打进 WebApp 的桌面渲染层源码。
+on:
+  push:
+    branches: [main]
+    paths:
+      - packages/ios-app/**
+      - packages/phone/**
+      - packages/pair/**
+      - src/renderer/**
+      - src/shared/**
+      - pnpm-lock.yaml
+      - .github/workflows/ios-ipa.yml
+  pull_request:
+    paths:
+      - packages/ios-app/**
+      - packages/phone/**
+      - packages/pair/**
+      - .github/workflows/ios-ipa.yml
+  workflow_dispatch:
+
+concurrency:
+  group: ios-ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  XCODEGEN_VERSION: 2.45.4
+
+jobs:
+  ipa:
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      # 与本地 TestFlight 打包同代 SDK：选 runner 上最新的正式版 Xcode
+      - name: Select Xcode
+        run: |
+          XCODE=$(ls -d /Applications/Xcode_*.app | grep -viE 'beta|_rc' | sort -V | tail -1)
+          sudo xcode-select -s "$XCODE"
+          xcodebuild -version
+
+      - uses: ./.github/actions/setup
+
+      - name: Install XcodeGen
+        run: |
+          curl -fsSL "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip" -o "$RUNNER_TEMP/xcodegen.zip"
+          unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
+
+      # 构建 @enso/phone、同步到 WebApp 并生成 EnsoCode.xcodeproj
+      - name: Sync web bundle
+        run: bash packages/ios-app/scripts/sync-web.sh
+
+      # 只在命令行关签名，project.yml 里本地 TestFlight 用的 team / profile 设置保持原样
+      - name: Archive (unsigned)
+        working-directory: packages/ios-app
+        run: |
+          xcodebuild archive \
+            -project EnsoCode.xcodeproj \
+            -scheme EnsoCode \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/EnsoCode.xcarchive" \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+
+      - name: Package ipa
+        id: ipa
+        env:
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          APP="$RUNNER_TEMP/EnsoCode.xcarchive/Products/Applications/EnsoCode.app"
+          for appex in EnsoNotificationService EnsoWidgets; do
+            test -d "$APP/PlugIns/$appex.appex" || { echo "::error::缺少扩展 $appex.appex"; exit 1; }
+          done
+          VERSION=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$APP/Info.plist")
+          BUILD=$(/usr/libexec/PlistBuddy -c 'Print CFBundleVersion' "$APP/Info.plist")
+          NAME="EnsoCode-${VERSION}-${BUILD}-${SHA:0:7}-unsigned"
+          mkdir -p "$RUNNER_TEMP/ipa/Payload"
+          cp -R "$APP" "$RUNNER_TEMP/ipa/Payload/"
+          (cd "$RUNNER_TEMP/ipa" && zip -qry "$NAME.ipa" Payload)
+          ls -lh "$RUNNER_TEMP/ipa/$NAME.ipa"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "path=$RUNNER_TEMP/ipa/$NAME.ipa" >> "$GITHUB_OUTPUT"
+
+      - name: Upload ipa
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ steps.ipa.outputs.name }}
+          path: ${{ steps.ipa.outputs.path }}
+          if-no-files-found: error
+          retention-days: 14

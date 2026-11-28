@@ -30,3 +30,7 @@ xcodebuild -project packages/ios-app/EnsoCode.xcodeproj \
   CODE_SIGNING_ALLOWED=NO \
   build
 ```
+
+## CI 产物
+
+GitHub Actions 的 `iOS IPA` 工作流（`.github/workflows/ios-ipa.yml`）在 main 推送、相关 PR 或手动触发时产出 `EnsoCode-<版本>-<构建号>-<短sha>-unsigned.ipa` artifact。它是未签名的 ipa，不能直接安装，需要自行重签（AltStore、Sideloadly 或企业证书等）。
