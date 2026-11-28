@@ -26,3 +26,6 @@ runs:
     - name: Install dependencies
       shell: bash
       run: pnpm install --frozen-lockfile
+      env:
+        # @vscode/ripgrep 的 postinstall 会调 GitHub API 取预编译包；带 token 避免共享出口 IP 被未认证限流（403）
+        GITHUB_TOKEN: ${{ github.token }}
