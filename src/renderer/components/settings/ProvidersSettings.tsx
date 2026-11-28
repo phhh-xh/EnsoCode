@@ -1,3 +1,6 @@
+import { AGY_PROVIDER_ID } from '@shared/agy/constants';
+import { agySettingsProvider, parseAgySettings } from '@shared/agy/settings';
+import { EMPTY_AGY_SETTINGS } from '@shared/agy/types';
 import { isClassifierOnlyProvider } from '@shared/providerCatalog';
 import { CUSTOM_VENDOR_ID, groupProviders } from '@shared/providerGroups';
 import type { ModelProvider, OauthProviderInfo } from '@shared/types';
@@ -21,6 +24,7 @@ import { addToast } from '@/components/ui/toast';
 import { useCachedAccountUsage } from '@/hooks/useAccountUsage';
 import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
+import { useAgyAuthStore } from '@/stores/agyAuth';
 import { useMaterializedProviders } from '@/stores/modelDirectory/useProviders';
 import { invalidateModelMeta } from '@/stores/modelMeta';
 import { useOauthCredentialStore } from '@/stores/oauthCredentials';
@@ -128,6 +132,8 @@ export function ProvidersSettings({ revealRowId }: { revealRowId?: string | null
   const updateProvider = useSettingsStore((state) => state.updateProvider);
   const addProviders = useSettingsStore((state) => state.addProviders);
   const removeProvider = useSettingsStore((state) => state.removeProvider);
+  const agyAdded = parseAgySettings(useSettingsStore((state) => state.agy)).added;
+  const setAgy = useSettingsStore((state) => state.setAgy);
   const [importOpen, setImportOpen] = React.useState(false);
   const [setupOpen, setSetupOpen] = React.useState(false);
   const [editing, setEditing] = React.useState<ModelProvider | null>(null);
@@ -182,6 +188,12 @@ export function ProvidersSettings({ revealRowId }: { revealRowId?: string | null
    * 直接往下走，不会卡在这——真正会走进下面 catch、需要重试或「仍要删除」的只有磁盘写入类真失败。
    */
   const performRemove = async (provider: ModelProvider, options?: { skipLogout?: boolean }) => {
+    if (provider.id === AGY_PROVIDER_ID) {
+      // agy cli 不在 providers 里：清空它的配置即移除；Main 随设置写入清掉探测落盘
+      setAgy(EMPTY_AGY_SETTINGS);
+      useAgyAuthStore.setState({ status: { status: 'unknown' }, cachedModels: [] });
+      return;
+    }
     setRemovingId(provider.id);
     setRemoveError(null);
     if (provider.oauthAccountKey && !provider.oauthAccountPool && !options?.skipLogout) {
@@ -310,7 +322,7 @@ export function ProvidersSettings({ revealRowId }: { revealRowId?: string | null
       <SubagentModelsSettings />
 
       <SettingsSection rowId="providers.providers" title={t('Providers')}>
-        <AgyCliSettings />
+        {agyAdded && <AgyCliSettings onRemove={() => setPendingRemove(agySettingsProvider([]))} />}
         {poolSources.length > 0 && !providers.some((p) => p.oauthAccountPool) && (
           <SettingsRow
             rowId="providers.create-chatgpt-account-pool"

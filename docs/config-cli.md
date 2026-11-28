@@ -99,7 +99,7 @@ enso config get providers.<id>            # apiKey、Authorization 等显示为 
 
 `longCacheRetention`（布尔，默认 `false`）打开后，会话请求（主会话、子代理、coworker、秘书、插件 agent.run）对 Anthropic Messages 接口的模型使用 1 小时 prompt cache，其余接口和标题等一次性辅助请求仍用默认 5 分钟；从下一次请求起生效，无需重启。
 
-`agy`（对象，`binaryPath` 字符串、`skipPermissions` 布尔，默认空路径和 false）是本机 Antigravity CLI 的路径和跳过权限开关。路径和执行类设置，CLI 不可写，只在设置页改。
+`agy`（对象，`added` 布尔、`binaryPath` 字符串、`skipPermissions` 布尔，默认 false、空路径和 false）是本机 Antigravity CLI 是否已添加、路径和跳过权限开关。`added` 为 false 时 agy cli 不出现在服务商和模型清单里；缺 `added` 的旧对象按已添加处理。路径和执行类设置，CLI 不可写，只在设置页改。
 
 `recentModels` 是模型选择器「最近使用」列表：`{ providerId, modelId }` 数组，最近的在前，最多 10 条且不重复；不符合的整体写入会被拒绝。它只存 id，不是密钥、路径或执行入口，热生效，不参与配置同步（引用本机 provider id）。
 

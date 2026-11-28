@@ -1,5 +1,4 @@
-import { AGY_PROVIDER_ID } from '@shared/agy/constants';
-import { agySettingsProvider, isSessionOnlyProvider } from '@shared/agy/settings';
+import { isSessionOnlyProvider, withAgyProvider } from '@shared/agy/settings';
 import { type ModelDirectorySnapshot, materializeProviders } from '@shared/modelDirectory';
 import type { ModelProvider } from '@shared/types';
 import { useMemo } from 'react';
@@ -15,15 +14,14 @@ import { useModelDirectoryStore } from './index';
 /** 目录未就绪时与 settings.providers 同形透传；就绪后 OAuth models 按目录合成。 */
 export function useMaterializedProviders(): ModelProvider[] {
   const providers = useSettingsStore((state) => state.providers);
+  const agy = useSettingsStore((state) => state.agy);
   const snapshot = useModelDirectoryStore((state) => state.snapshot);
   const agyStatus = useAgyAuthStore((state) => state.status);
   const agyCachedModels = useAgyAuthStore((state) => state.cachedModels);
   return useMemo(() => {
-    const materialized = materializeProviders(providers, snapshot);
-    if (materialized.some((provider) => provider.id === AGY_PROVIDER_ID)) return materialized;
     const agyModels = agyModelsFromState({ status: agyStatus, cachedModels: agyCachedModels });
-    return [...materialized, agySettingsProvider(agyModels)];
-  }, [providers, snapshot, agyStatus, agyCachedModels]);
+    return withAgyProvider(materializeProviders(providers, snapshot), agy, agyModels);
+  }, [providers, agy, snapshot, agyStatus, agyCachedModels]);
 }
 
 /** picker / 默认模型共用口径：先物化目录，再按 OAuth 凭证筛可用条目。 */

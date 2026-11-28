@@ -1,3 +1,4 @@
+import { parseAgySettings } from '@shared/agy/settings';
 import { isClassifierOnlyProvider, mergeProviderDefinitions } from '@shared/providerCatalog';
 import type { OauthAccount, OauthProviderInfo } from '@shared/types';
 import { ArrowLeft, BadgeCheck, KeyRound, Puzzle, SquareTerminal } from 'lucide-react';
@@ -42,6 +43,8 @@ const WIZARD_STEP_ORDER: Record<WizardStep, number> = {
 export function ProviderSetupWizard({ open, onOpenChange }: ProviderSetupWizardProps) {
   const { t } = useI18n();
   const addProviders = useSettingsStore((state) => state.addProviders);
+  const agy = useSettingsStore((state) => state.agy);
+  const setAgy = useSettingsStore((state) => state.setAgy);
   const [{ step, previousStep, transitionStarted, pageId }, setWizardPage] = React.useState<{
     step: WizardStep;
     previousStep: WizardStep | null;
@@ -288,7 +291,10 @@ export function ProviderSetupWizard({ open, onOpenChange }: ProviderSetupWizardP
                     <button
                       type="button"
                       className="flex min-w-0 items-center gap-3 rounded-md bg-muted/40 px-3 py-3 text-left transition-colors hover:bg-accent"
-                      onClick={() => setStep('agy')}
+                      onClick={() => {
+                        setAgy({ ...parseAgySettings(agy), added: true });
+                        setStep('agy');
+                      }}
                     >
                       <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-muted text-foreground">
                         <SquareTerminal className="h-4 w-4 text-muted-foreground" />

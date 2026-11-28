@@ -32,4 +32,11 @@ describe('agy cli 入口', () => {
   it('设置卡片标题标明实验', () => {
     expect(renderToStaticMarkup(<AgyCliSettings />)).toContain('agy cli (experimental)');
   });
+
+  it('只有服务商列表给了移除回调时才有移除按钮', () => {
+    expect(renderToStaticMarkup(<AgyCliSettings />)).not.toContain('aria-label="Remove"');
+    expect(renderToStaticMarkup(<AgyCliSettings onRemove={vi.fn()} />)).toContain(
+      'aria-label="Remove"'
+    );
+  });
 });

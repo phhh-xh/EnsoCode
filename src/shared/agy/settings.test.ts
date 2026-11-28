@@ -1,6 +1,57 @@
 import { describe, expect, it } from 'vitest';
-import { AGY_DEFAULT_MODEL_ID, AGY_DEFAULT_MODEL_NAME, AGY_PROVIDER_NAME } from './constants';
-import { agySettingsProvider } from './settings';
+import type { ModelProvider } from '../types/llm';
+import {
+  AGY_DEFAULT_MODEL_ID,
+  AGY_DEFAULT_MODEL_NAME,
+  AGY_PROVIDER_ID,
+  AGY_PROVIDER_NAME,
+} from './constants';
+import { agySettingsProvider, parseAgySettings, withAgyProvider } from './settings';
+import { EMPTY_AGY_SETTINGS } from './types';
+
+describe('parseAgySettings', () => {
+  it('treats agy as not added on a fresh install', () => {
+    expect(parseAgySettings(undefined).added).toBe(false);
+    expect(EMPTY_AGY_SETTINGS.added).toBe(false);
+  });
+
+  it('keeps agy for settings saved before the added flag existed', () => {
+    // 这些用户的服务商列表里一直有 agy cli；升级不能让它凭空消失
+    expect(parseAgySettings({ binaryPath: '', skipPermissions: false }).added).toBe(true);
+  });
+
+  it('honours an explicit removal', () => {
+    expect(
+      parseAgySettings({ added: false, binaryPath: '/opt/agy', skipPermissions: true })
+    ).toEqual({ added: false, binaryPath: '/opt/agy', skipPermissions: true });
+  });
+});
+
+describe('withAgyProvider', () => {
+  const api: ModelProvider = {
+    id: 'api',
+    name: 'API',
+    api: 'openai-completions',
+    apiKey: 'k',
+    baseUrl: 'https://example.test',
+    enabled: true,
+    models: [],
+  };
+
+  it('lists agy cli only while it is added', () => {
+    expect(
+      withAgyProvider([api], { ...EMPTY_AGY_SETTINGS, added: true }, []).map((p) => p.id)
+    ).toEqual(['api', AGY_PROVIDER_ID]);
+    expect(withAgyProvider([api], EMPTY_AGY_SETTINGS, []).map((p) => p.id)).toEqual(['api']);
+  });
+
+  it('does not bring agy back from probed models after removal', () => {
+    const models = [{ id: 'gemini-3-pro', name: 'Gemini 3 Pro' }];
+    expect(
+      withAgyProvider([], { added: false, binaryPath: '', skipPermissions: false }, models)
+    ).toEqual([]);
+  });
+});
 
 describe('agySettingsProvider', () => {
   it('offers only the default model before agy has been probed', () => {

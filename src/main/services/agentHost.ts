@@ -4,7 +4,7 @@ import path from 'node:path';
 import { agentWorkerPath, app, resourcesPath, utilityProcess, type WorkerProcess } from '@platform';
 import { describeAgentWorkerExit } from '@shared/agentWorkerExit';
 import { AGY_PROVIDER_ID } from '@shared/agy/constants';
-import { agySettingsProvider, parseAgySettings } from '@shared/agy/settings';
+import { parseAgySettings, withAgyProvider } from '@shared/agy/settings';
 import { APP_LOGGING_ENV, isAppLoggingEnabled } from '@shared/appLogFile';
 import {
   type ApprovalAllowThreshold,
@@ -153,7 +153,7 @@ import {
   isAgentWorkerGone,
   takeAgentWorkerCrash,
 } from './agentWorkerExit';
-import { cachedAgyModels } from './agyProbe';
+import { cachedAgyModels, forgetAgyProbe } from './agyProbe';
 import { backgroundTaskStates } from './backgroundTaskTracker';
 import { type MemberAgentType, memberSpawnDescription } from './bots/botAgentType';
 import { BuiltinToolScopes, sessionDisabledTools, withoutKeepEnabled } from './builtinToolScopes';
@@ -3448,13 +3448,15 @@ export function pushLongCacheRetention(): void {
 }
 
 export function pushAgyConfig(): void {
-  if (!worker || !workerReady) return;
   const agy = parseAgySettings(readSettingsState()?.agy);
+  // 移除 agy cli 时一并清掉探测落盘的模型清单（应用创建的本地副本）
+  if (!agy.added) forgetAgyProbe();
+  if (!worker || !workerReady) return;
   worker.postMessage({
     type: 'set-agy-config',
     binaryPath: agy.binaryPath,
     skipPermissions: agy.skipPermissions,
-    models: cachedAgyModels(),
+    models: agy.added ? cachedAgyModels() : [],
   } satisfies AgentCommand);
 }
 
@@ -3632,9 +3634,11 @@ export function providersFromSettings(): ModelProvider[] {
       )
     : [];
   // OAuth 条目的 models 只是稀疏覆盖；存在性、enabled 与凭证校验都看目录物化后的清单。
-  const materialized = materializeProviders(raw, getModelDirectorySnapshot());
-  if (materialized.some((provider) => provider.id === AGY_PROVIDER_ID)) return materialized;
-  return [...materialized, agySettingsProvider(cachedAgyModels())];
+  return withAgyProvider(
+    materializeProviders(raw, getModelDirectorySnapshot()),
+    readSettingsState()?.agy,
+    cachedAgyModels()
+  );
 }
 
 export function modelRefForSpawnConfig(config: SpawnModelConfig): ModelRef {

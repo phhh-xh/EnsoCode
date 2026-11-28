@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs';
+import { existsSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import { join } from 'node:path';
 import { app } from '@platform';
@@ -43,6 +43,18 @@ function persistModels(models: AgyModelOption[]): void {
 
 export function cachedAgyAuth(): AgyAuthStatus {
   return cached;
+}
+
+/** agy cli 被移除：丢掉登录态与落盘清单。每次设置写入都会调，已清过就不再碰盘。 */
+export function forgetAgyProbe(): void {
+  cached = { status: 'unknown' };
+  if (persisted !== undefined && persisted.length === 0) return;
+  persisted = [];
+  try {
+    rmSync(modelsCachePath(), { force: true });
+  } catch {
+    // 缓存是派生数据；删不掉时 added=false 已让它不再被列出
+  }
 }
 
 /** 不探测：登录态用实时清单，状态未知用落盘清单，明确不可用时为空。 */

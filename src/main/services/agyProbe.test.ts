@@ -120,6 +120,20 @@ describe('agy 模型清单落盘', () => {
     expect(probe.cachedAgyModels()).toEqual(models);
     expect(existsSync(path.join(mocks.userData, CACHE))).toBe(false);
   });
+
+  it('移除 agy 后清掉落盘清单和登录态，重启也不再列出模型', async () => {
+    mocks.probe.mockResolvedValue({ status: 'signed-in', version: '1.5.18', models });
+    const probe = await boot();
+    await probe.detectAgyAuth('', true);
+    expect(existsSync(cacheFile())).toBe(true);
+
+    probe.forgetAgyProbe();
+    probe.forgetAgyProbe();
+    expect(existsSync(cacheFile())).toBe(false);
+    expect(probe.cachedAgyAuth()).toEqual({ status: 'unknown' });
+    expect(probe.cachedAgyModels()).toEqual([]);
+    expect((await boot()).cachedAgyModels()).toEqual([]);
+  });
 });
 
 function cacheFileParentThatIsAFile(): string {

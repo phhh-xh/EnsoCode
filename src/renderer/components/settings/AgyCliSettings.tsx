@@ -1,7 +1,7 @@
 import { parseAgyAuthStatus } from '@shared/agy/catalog';
 import { parseAgySettings } from '@shared/agy/settings';
 import type { AgyAuthStatus } from '@shared/agy/types';
-import { Loader2 } from 'lucide-react';
+import { Loader2, Trash2 } from 'lucide-react';
 import * as React from 'react';
 import { Button } from '@/components/ui/button';
 import { useI18n } from '@/i18n';
@@ -24,7 +24,8 @@ function statusText(status: AgyAuthStatus, t: (key: string) => string): string {
   }
 }
 
-export function AgyCliSettings() {
+/** onRemove 只在设置页的服务商列表里给；添加向导里只做配置。 */
+export function AgyCliSettings({ onRemove }: { onRemove?: () => void } = {}) {
   const { t } = useI18n();
   const agy = useSettingsStore((state) => state.agy);
   const setAgy = useSettingsStore((state) => state.setAgy);
@@ -95,6 +96,18 @@ export function AgyCliSettings() {
             {checking ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
             {t('Detect again')}
           </Button>
+          {onRemove ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              aria-label={t('Remove')}
+              className="text-muted-foreground hover:text-destructive"
+              onClick={onRemove}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </Button>
+          ) : null}
         </div>
         {status.status === 'signed-out' || status.status === 'not-installed' ? (
           <p className="text-xs text-muted-foreground">

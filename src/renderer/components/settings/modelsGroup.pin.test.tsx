@@ -106,6 +106,7 @@ const MODELS_GROUP_PAGES = await (async () => {
     subagentModels: SUBAGENT,
     presets: PRESETS,
     agentTypes: AGENTS,
+    agy: { added: true, binaryPath: '', skipPermissions: false },
   });
   const [{ ProvidersSettings }, { PresetsSettings }, { AgentTypesSettings }] = await Promise.all([
     import('./ProvidersSettings'),

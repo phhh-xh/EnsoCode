@@ -124,6 +124,7 @@ beforeEach(() => {
     botRouteClassifier: classifierConfig,
     botAssistantModel: null,
     botMaxRunningTurns: 1,
+    agy: { added: true, binaryPath: '', skipPermissions: false },
   };
 });
 

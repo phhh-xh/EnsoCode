@@ -10,9 +10,11 @@ import type { AgyModelOption, AgySettings } from './types';
 export function parseAgySettings(value: unknown): AgySettings {
   const row =
     value && typeof value === 'object' && !Array.isArray(value)
-      ? (value as { binaryPath?: unknown; skipPermissions?: unknown })
+      ? (value as { added?: unknown; binaryPath?: unknown; skipPermissions?: unknown })
       : undefined;
   return {
+    // 没有 added 的旧对象来自 agy 还无条件列出的版本：这些用户一直看得到它，升级后保留
+    added: row ? row.added !== false : false,
     binaryPath: typeof row?.binaryPath === 'string' ? row.binaryPath : '',
     skipPermissions: row?.skipPermissions === true,
   };
@@ -32,6 +34,17 @@ export function agySettingsProvider(models: readonly AgyModelOption[]): ModelPro
     enabled: true,
     models: list.map((model) => ({ id: model.id, label: model.name })),
   };
+}
+
+/** Main 与 renderer 共用：只有用户添加了 agy cli 才把它并进服务商清单。 */
+export function withAgyProvider(
+  providers: ModelProvider[],
+  agy: unknown,
+  models: readonly AgyModelOption[]
+): ModelProvider[] {
+  if (!parseAgySettings(agy).added) return providers;
+  if (providers.some((provider) => provider.id === AGY_PROVIDER_ID)) return providers;
+  return [...providers, agySettingsProvider(models)];
 }
 
 /** 只能在会话里经 agy bridge 跑的 provider：标题、提交信息、代审、压缩这类一次性请求不能用。 */

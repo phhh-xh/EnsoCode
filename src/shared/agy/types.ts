@@ -151,10 +151,16 @@ export interface PromptMessage {
 }
 
 export interface AgySettings {
+  /** 用户在「添加模型或服务商」里加了 agy cli；移除后不再出现在服务商和模型清单里 */
+  added: boolean;
   binaryPath: string;
   skipPermissions: boolean;
 }
 
-export const EMPTY_AGY_SETTINGS: AgySettings = { binaryPath: '', skipPermissions: false };
+export const EMPTY_AGY_SETTINGS: AgySettings = {
+  added: false,
+  binaryPath: '',
+  skipPermissions: false,
+};
 
 export type { ApprovalMode };
