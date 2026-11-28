@@ -452,7 +452,13 @@ async function main(): Promise<void> {
       },
       forgetDesk: (pairId) => clearDeskMeta(localStorage, pairId),
     }),
-    link: () => toRemoteLinkStatus(link, pushAvailability()),
+    link: () => {
+      const relayKind = tunnel.diagnostics().relayKind;
+      return {
+        ...toRemoteLinkStatus(link, pushAvailability()),
+        ...(relayKind === 'quic' || relayKind === 'ws' ? { relayKind } : {}),
+      };
+    },
     onLink(listener) {
       linkListeners.add(listener);
       return () => linkListeners.delete(listener);

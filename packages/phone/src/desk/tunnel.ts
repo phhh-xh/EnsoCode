@@ -277,7 +277,12 @@ export class DeskTunnel {
   }
 
   private setState(state: ConnState): void {
-    this.note(`state ${state}`);
+    const diag = typeof this.client.diagnostics === 'function' ? this.client.diagnostics() : null;
+    const extra =
+      diag && (state === 'online' || state === 'offline')
+        ? ` ${diag.relayKind ?? '-'}${diag.relayDetail ? `(${diag.relayDetail})` : ''}`
+        : '';
+    this.note(`state ${state}${extra}`);
     this.onState(state);
     const was = this.online;
     this.online = state === 'online';
@@ -814,7 +819,9 @@ export class DeskTunnel {
             }
           }
         }
-        this.resolvePendingPrefetch(frame.cid);
+        if (frame.more !== true) {
+          this.resolvePendingPrefetch(frame.cid);
+        }
         return;
       }
     }

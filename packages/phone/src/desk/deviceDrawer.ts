@@ -189,7 +189,7 @@ export function createDeviceDrawer(host: DeviceDrawerHost) {
 
   const statusText = (link: RemoteLinkStatus) =>
     link.state === 'online'
-      ? formatOnlineConnectionLabel(link.transport, link.rttMs)
+      ? formatOnlineConnectionLabel(link.transport, link.rttMs, link.relayKind)
       : CONN_STATE_LABEL[link.state];
 
   const applyTheme = () => {

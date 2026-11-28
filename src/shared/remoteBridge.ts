@@ -119,6 +119,8 @@ export interface RemoteLinkStatus {
   deviceLabel: string;
   state: RemoteLinkState;
   transport: 'relay' | 'direct';
+  /** 中继底层协议（原生 iOS QUIC 或标准 WebSocket），供界面展示 */
+  relayKind?: 'ws' | 'quic' | null;
   rttMs: number | null;
   pushReady: boolean;
   pushEnabled: boolean;

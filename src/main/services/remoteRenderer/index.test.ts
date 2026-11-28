@@ -66,7 +66,14 @@ describe('remoteRenderer rpc-hello 1-RTT prefetch', () => {
     mocks.handlers.set(IPC_CHANNELS.SETTINGS_READ, async () => ({
       'enso-settings': { state: { theme: 'dark' } },
     }));
-    mocks.handlers.set(IPC_CHANNELS.MODEL_DIRECTORY_GET, async () => ({ providers: [] }));
+    let releaseSlow!: () => void;
+    const slowGate = new Promise<void>((resolve) => {
+      releaseSlow = resolve;
+    });
+    mocks.handlers.set(IPC_CHANNELS.MODEL_DIRECTORY_GET, async () => {
+      await slowGate;
+      return { providers: [] };
+    });
     const windowSpy = vi.fn(async () => 'should-not-run');
     mocks.handlers.set(IPC_CHANNELS.WINDOW_MINIMIZE, windowSpy);
 
@@ -89,8 +96,9 @@ describe('remoteRenderer rpc-hello 1-RTT prefetch', () => {
       ],
     });
 
+    // 核心读（settings:read）先单独发第一帧并带 more: true，不等慢的次级通道
     await vi.waitFor(() => {
-      expect(sent.some((f) => f.type === 'rpc-prefetch')).toBe(true);
+      expect(sent.filter((f) => f.type === 'rpc-prefetch')).toHaveLength(1);
     });
 
     expect(windowSpy).not.toHaveBeenCalled();
@@ -102,18 +110,25 @@ describe('remoteRenderer rpc-hello 1-RTT prefetch', () => {
       prefetch: true,
     });
 
-    const prefetchFrame = sent.find(
+    const firstBatch = sent.find(
       (f): f is Extract<HostToRemote, { type: 'rpc-prefetch' }> => f.type === 'rpc-prefetch'
     )!;
-    expect(prefetchFrame.items).toHaveLength(2);
-    expect(prefetchFrame.items.map((i) => i.ch)).toEqual([
-      IPC_CHANNELS.SETTINGS_READ,
-      IPC_CHANNELS.MODEL_DIRECTORY_GET,
-    ]);
+    expect(firstBatch.more).toBe(true);
+    expect(firstBatch.items.map((i) => i.ch)).toEqual([IPC_CHANNELS.SETTINGS_READ]);
+
+    // 放行次级读后发收尾帧（不带 more）
+    releaseSlow();
+    await vi.waitFor(() => {
+      expect(sent.filter((f) => f.type === 'rpc-prefetch')).toHaveLength(2);
+    });
+    const secondBatch = sent.filter(
+      (f): f is Extract<HostToRemote, { type: 'rpc-prefetch' }> => f.type === 'rpc-prefetch'
+    )[1]!;
+    expect(secondBatch.more).toBeUndefined();
+    expect(secondBatch.items.map((i) => i.ch)).toEqual([IPC_CHANNELS.MODEL_DIRECTORY_GET]);
 
     // 携带匹配 hash 再连一次，回 same: 1
-    const firstHash = (prefetchFrame.items[0].data as { __ensoCached: { h: string } }).__ensoCached
-      .h;
+    const firstHash = (firstBatch.items[0].data as { __ensoCached: { h: string } }).__ensoCached.h;
     sent.length = 0;
     await handleRemoteCommand(link, {
       type: 'rpc-hello',

@@ -229,6 +229,7 @@ describe('nativeBridge (iOS 原生壳桥接 + QUIC Happy Eyeballs 回落)', () =
     await vi.advanceTimersByTimeAsync(1_200);
     expect(wsCreated).toEqual(['wss://blocked-udp.example.com/v1/pair/p2?role=guest&token=t2']);
     expect(nativeMock.closeQuic).toHaveBeenCalledTimes(1);
+    expect(sock.transportDetail).toContain('quic-timeout(1500ms');
     sock.close();
 
     // 冷却期内再次建连直接走 WSS，不再白等 QUIC 超时
@@ -242,7 +243,80 @@ describe('nativeBridge (iOS 原生壳桥接 + QUIC Happy Eyeballs 回落)', () =
     await vi.advanceTimersByTimeAsync(10);
     expect(nativeMock.openQuic).toHaveBeenCalledTimes(1);
     expect(wsCreated).toHaveLength(2);
+    expect(sock2.transportDetail).toMatch(/^cooldown\(\d+s\)$/);
     sock2.close();
+  });
+
+  it('wss:// 中继地址也能正常规范化探测 /healthz，并在 QUIC 原生层报错时记录 transportDetail', async () => {
+    let closeCb: ((id: string, code: number, reason: string) => void) | null = null;
+    let diagCb: ((id: string, detail: string) => void) | null = null;
+    const wsCreated: string[] = [];
+    class FakeWS {
+      readyState = 0;
+      binaryType = '';
+      onopen = null;
+      onmessage = null;
+      onclose = null;
+      onerror = null;
+      constructor(url: string) {
+        wsCreated.push(url);
+      }
+      send() {}
+      close() {}
+    }
+    (globalThis as Record<string, unknown>).WebSocket = FakeWS;
+
+    const nativeMock = {
+      platform: 'ios' as const,
+      quic: true,
+      deskProxy: true,
+      openQuic: vi.fn(),
+      closeQuic: vi.fn(),
+      onQuicOpen: () => {},
+      onQuicControl: () => {},
+      onQuicBinary: () => {},
+      onQuicClose: (cb: (id: string, code: number, reason: string) => void) => {
+        closeCb = cb;
+      },
+      onQuicDiag: (cb: (id: string, detail: string) => void) => {
+        diagCb = cb;
+      },
+    };
+    (window as unknown as Record<string, unknown>).__ensoNative = nativeMock;
+    const fetchSpy = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ ok: true, quic: true, quicPort: 443, alpn: 'enso-pair/1' }), {
+          status: 200,
+        })
+    );
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+
+    const sock = createNativeOrBrowserRelaySocket({
+      relayUrl: 'wss://wss-norm.example.com',
+      wsUrl: 'wss://wss-norm.example.com/v1/pair/p4?role=guest&token=t4',
+      pairId: 'p4',
+      role: 'guest',
+      token: 't4',
+    });
+
+    await vi.advanceTimersByTimeAsync(10);
+    expect(fetchSpy).toHaveBeenCalledWith(
+      'https://wss-norm.example.com/healthz',
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    );
+    expect(nativeMock.openQuic).toHaveBeenCalledTimes(1);
+    const id = nativeMock.openQuic.mock.calls[0][0].id as string;
+
+    diagCb?.(id, 'group-waiting:POSIXErrorCode(50)');
+    expect(sock.transportDetail).toBe('quic-pending(group-waiting:POSIXErrorCode(50))');
+
+    closeCb?.(id, 1006, 'quic-failed:TLSHandshakeFailed');
+    expect(sock.transportKind).toBe('ws');
+    expect(sock.transportDetail).toBe(
+      'quic-close(1006,quic-failed:TLSHandshakeFailed;group-waiting:POSIXErrorCode(50))'
+    );
+    expect(wsCreated).toHaveLength(1);
+    sock.close();
   });
 
   it('兼容 attachHeartbeat 的 addEventListener/removeEventListener（WSS 回落与 QUIC 路径都不抛异常）', async () => {

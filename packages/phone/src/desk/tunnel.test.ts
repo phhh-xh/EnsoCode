@@ -459,15 +459,22 @@ describe('DeskTunnel', () => {
     mockState.events?.onRemoteFrame?.({
       type: 'rpc-prefetch',
       cid: hello.cid,
-      items: [
-        { ch: 'settings:read', args: [], data: { __ensoCached: { h: 'hs1', same: 1 } } },
-        { ch: 'conversations:read', args: [], data: { __ensoCached: { h: 'hc1', same: 1 } } },
-      ],
+      more: true,
+      items: [{ ch: 'settings:read', args: [], data: { __ensoCached: { h: 'hs1', same: 1 } } }],
     } as HostToRemote);
 
     await expect(settingsHit!).resolves.toEqual({ __ensoCached: { h: 'hs1', same: 1 } });
-    // 已到站后再 takePrefetch 同样可直接消费一次
+    // 首帧带 more: true 时，次级条目仍保持挂起，等待后续批次到达后再兑现
     const convHit = t.takePrefetch('conversations:read\0[]', 'hc1');
+    expect(convHit).not.toBeNull();
+    mockState.events?.onRemoteFrame?.({
+      type: 'rpc-prefetch',
+      cid: hello.cid,
+      items: [
+        { ch: 'conversations:read', args: [], data: { __ensoCached: { h: 'hc1', same: 1 } } },
+      ],
+    } as HostToRemote);
+    // 已到站后再 takePrefetch 同样可直接消费一次
     await expect(convHit!).resolves.toEqual({ __ensoCached: { h: 'hc1', same: 1 } });
     expect(t.takePrefetch('conversations:read\0[]', 'hc1')).toBeNull();
 

@@ -36,6 +36,7 @@ export interface EnsoNativeBridge {
   onQuicControl?(cb: (id: string, text: string) => void): void;
   onQuicBinary?(cb: (id: string, base64: string) => void): void;
   onQuicClose?(cb: (id: string, code: number, reason: string) => void): void;
+  onQuicDiag?(cb: (id: string, detail: string) => void): void;
   /** 原生 AVFoundation 扫码；用户取消返回 null */
   scanQr?(): Promise<string | null>;
   /** 是否具备原生 APNs 端到端推送能力（iOS UNUserNotificationCenter + NSE 本地解密） */
@@ -176,6 +177,8 @@ interface QuicEndpoint {
 
 /** 同一中继的 /healthz QUIC 探测结果缓存（5 分钟内复用） */
 const QUIC_PROBE_TTL_MS = 5 * 60_000;
+/** /healthz 网络/解析失败的短缓存：避免冷启动短暂波动把 QUIC 封杀 5 分钟 */
+const QUIC_PROBE_FAIL_TTL_MS = 15_000;
 /** Happy Eyeballs：100ms RTT 蜂窝/跨境网络下 QUIC 握手+开三流约 300~600ms，留足窗口防误回落 WSS */
 export const QUIC_HAPPY_EYEBALLS_MS = 1_500;
 /** UDP 被封连续超时后的短冷却：期间直接走 WSS，避免每次重连都白等 1.5s */
@@ -186,6 +189,8 @@ interface RelayHealthInfo {
   at: number;
   endpoint: QuicEndpoint | null;
   apns: boolean;
+  ok: boolean;
+  reason: string;
 }
 
 const endpointCache = new Map<string, RelayHealthInfo>();
@@ -331,18 +336,36 @@ function toBytes(data: ArrayBuffer | Uint8Array): Uint8Array {
   return data instanceof Uint8Array ? data : new Uint8Array(data);
 }
 
+function normalizeRelayHttpUrl(relayUrl: string): string {
+  return relayUrl
+    .trim()
+    .replace(/^wss:\/\//i, 'https://')
+    .replace(/^ws:\/\//i, 'http://');
+}
+
 async function probeRelayHealth(
   relayUrl: string,
   options?: { fresh?: boolean }
 ): Promise<RelayHealthInfo | null> {
   const now = Date.now();
-  const cached = endpointCache.get(relayUrl);
-  if (!options?.fresh && cached && now - cached.at < QUIC_PROBE_TTL_MS) return cached;
+  const normalized = normalizeRelayHttpUrl(relayUrl);
+  const cached = endpointCache.get(normalized);
+  const ttl = cached?.ok ? QUIC_PROBE_TTL_MS : QUIC_PROBE_FAIL_TTL_MS;
+  if (!options?.fresh && cached && now - cached.at < ttl) return cached;
   let parsed: URL;
   try {
-    parsed = new URL(relayUrl);
+    parsed = new URL(normalized);
   } catch {
-    return null;
+    return { at: now, endpoint: null, apns: false, ok: false, reason: 'invalid-url' };
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    return {
+      at: now,
+      endpoint: null,
+      apns: false,
+      ok: false,
+      reason: `bad-proto:${parsed.protocol}`,
+    };
   }
   try {
     const ctrl = new AbortController();
@@ -350,8 +373,14 @@ async function probeRelayHealth(
     const res = await fetch(`${parsed.origin}/healthz`, { signal: ctrl.signal });
     clearTimeout(timer);
     if (!res.ok) {
-      const miss: RelayHealthInfo = { at: now, endpoint: null, apns: false };
-      endpointCache.set(relayUrl, miss);
+      const miss: RelayHealthInfo = {
+        at: now,
+        endpoint: null,
+        apns: false,
+        ok: false,
+        reason: `http-${res.status}`,
+      };
+      endpointCache.set(normalized, miss);
       return miss;
     }
     const body = (await res.json()) as {
@@ -372,17 +401,27 @@ async function probeRelayHealth(
             alpn: typeof body.alpn === 'string' && body.alpn ? body.alpn : 'enso-pair/1',
           }
         : null;
-    const info: RelayHealthInfo = { at: now, endpoint, apns: body.apns === true };
-    endpointCache.set(relayUrl, info);
+    const info: RelayHealthInfo = {
+      at: now,
+      endpoint,
+      apns: body.apns === true,
+      ok: true,
+      reason: endpoint ? 'ok' : `no-quic(apns=${body.apns === true})`,
+    };
+    endpointCache.set(normalized, info);
     return info;
-  } catch {}
-  const miss: RelayHealthInfo = { at: now, endpoint: null, apns: false };
-  endpointCache.set(relayUrl, miss);
-  return miss;
-}
-
-async function probeQuicEndpoint(relayUrl: string): Promise<QuicEndpoint | null> {
-  return (await probeRelayHealth(relayUrl))?.endpoint ?? null;
+  } catch (err) {
+    const errMsg = err instanceof Error ? `${err.name}:${err.message}` : String(err ?? 'unknown');
+    const miss: RelayHealthInfo = {
+      at: now,
+      endpoint: null,
+      apns: false,
+      ok: false,
+      reason: `err:${errMsg.slice(0, 80)}`,
+    };
+    endpointCache.set(normalized, miss);
+    return miss;
+  }
 }
 
 /**
@@ -392,7 +431,7 @@ async function probeQuicEndpoint(relayUrl: string): Promise<QuicEndpoint | null>
 export async function resolveNativePushGatewayOrigin(relayUrl?: string): Promise<string | null> {
   if (!relayUrl) return null;
   try {
-    const normalized = relayUrl.trim().replace(/^wss:\/\//i, 'https://');
+    const normalized = normalizeRelayHttpUrl(relayUrl);
     const parsed = new URL(normalized);
     if (parsed.protocol !== 'https:') return null;
     const cached = endpointCache.get(normalized);
@@ -410,6 +449,7 @@ interface QuicCallbacks {
   onControl: (text: string) => void;
   onBinary: (base64: string) => void;
   onClose: (code: number, reason: string) => void;
+  onDiag?: (detail: string) => void;
 }
 
 const quicRegistry = new Map<string, QuicCallbacks>();
@@ -422,6 +462,7 @@ function ensureQuicWired(native: EnsoNativeBridge): void {
   native.onQuicControl?.((id, text) => quicRegistry.get(id)?.onControl(text));
   native.onQuicBinary?.((id, base64) => quicRegistry.get(id)?.onBinary(base64));
   native.onQuicClose?.((id, code, reason) => quicRegistry.get(id)?.onClose(code, reason));
+  native.onQuicDiag?.((id, detail) => quicRegistry.get(id)?.onDiag?.(detail));
 }
 
 /**
@@ -438,17 +479,21 @@ class HappyEyeballsRelaySocket implements RelaySocketLike {
   onclose: ((event: { code: number; reason: string }) => void) | null = null;
   onerror: (() => void) | null = null;
   transportKind: RelayTransportKind = 'ws';
+  transportDetail = 'quic-init';
 
   private active: 'pending' | 'quic' | 'ws' | 'closed' = 'pending';
   private quicId: string | null = null;
   private ws: RelaySocketLike | null = null;
   private fallbackTimer: ReturnType<typeof setTimeout> | null = null;
   private listeners = new Map<string, Set<(event: unknown) => void>>();
+  private lastNativeDiag: string | null = null;
+  private readonly relayKey: string;
 
   constructor(
     private native: EnsoNativeBridge,
     private params: RelayConnectParams
   ) {
+    this.relayKey = normalizeRelayHttpUrl(params.relayUrl);
     ensureQuicWired(native);
     void this.start();
   }
@@ -493,26 +538,37 @@ class HappyEyeballsRelaySocket implements RelaySocketLike {
   }
 
   private async start(): Promise<void> {
-    const cooledUntil = quicCooldownUntil.get(this.params.relayUrl) ?? 0;
+    const cooledUntil = quicCooldownUntil.get(this.relayKey) ?? 0;
     if (Date.now() < cooledUntil) {
+      this.transportDetail = `cooldown(${Math.max(1, Math.ceil((cooledUntil - Date.now()) / 1000))}s)`;
       this.fallbackToWs();
       return;
     }
-    const endpoint = await probeQuicEndpoint(this.params.relayUrl);
+    const health = await probeRelayHealth(this.relayKey);
     if (this.active !== 'pending') return;
-    if (!endpoint || !this.native.openQuic) {
+    const endpoint = health?.endpoint ?? null;
+    if (!endpoint) {
+      this.transportDetail = `probe-${health?.reason ?? 'null'}`;
+      this.fallbackToWs();
+      return;
+    }
+    if (!this.native.openQuic) {
+      this.transportDetail = 'no-open-quic';
       this.fallbackToWs();
       return;
     }
     const id = `q-${++quicConnSeq}`;
     this.quicId = id;
+    const quicStartAt = Date.now();
+    this.transportDetail = `quic-dial(${endpoint.host}:${endpoint.port})`;
     quicRegistry.set(id, {
       onOpen: () => {
         if (this.active !== 'pending' || this.quicId !== id) return;
         this.clearFallbackTimer();
-        quicCooldownUntil.delete(this.params.relayUrl);
+        quicCooldownUntil.delete(this.relayKey);
         this.active = 'quic';
         this.transportKind = 'quic';
+        this.transportDetail = `quic-ok(${endpoint.host}:${endpoint.port},${Date.now() - quicStartAt}ms)`;
         this.emitOpen();
       },
       onControl: (text) => {
@@ -542,12 +598,21 @@ class HappyEyeballsRelaySocket implements RelaySocketLike {
           // 建连阶段 QUIC 失败 → 立即回落 WSS，并短时冷却避免反复空等
           this.clearFallbackTimer();
           this.quicId = null;
-          quicCooldownUntil.set(this.params.relayUrl, Date.now() + QUIC_FAILURE_COOLDOWN_MS);
+          const diag = this.lastNativeDiag ? `;${this.lastNativeDiag}` : '';
+          this.transportDetail = `quic-close(${code},${reason || 'empty'}${diag})`;
+          quicCooldownUntil.set(this.relayKey, Date.now() + QUIC_FAILURE_COOLDOWN_MS);
           this.fallbackToWs();
           return;
         }
         if (this.active === 'quic') {
           this.finishClose(code, reason);
+        }
+      },
+      onDiag: (detail) => {
+        if (this.quicId !== id) return;
+        this.lastNativeDiag = detail.slice(0, 120);
+        if (this.active === 'pending') {
+          this.transportDetail = `quic-pending(${this.lastNativeDiag})`;
         }
       },
     });
@@ -560,7 +625,9 @@ class HappyEyeballsRelaySocket implements RelaySocketLike {
         quicRegistry.delete(staleId);
         this.native.closeQuic?.(staleId, 1000, 'happy-eyeballs-fallback');
       }
-      quicCooldownUntil.set(this.params.relayUrl, Date.now() + QUIC_FAILURE_COOLDOWN_MS);
+      const diag = this.lastNativeDiag ? `;${this.lastNativeDiag}` : '';
+      this.transportDetail = `quic-timeout(${QUIC_HAPPY_EYEBALLS_MS}ms${diag})`;
+      quicCooldownUntil.set(this.relayKey, Date.now() + QUIC_FAILURE_COOLDOWN_MS);
       this.fallbackToWs();
     }, QUIC_HAPPY_EYEBALLS_MS);
 

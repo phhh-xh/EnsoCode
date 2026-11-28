@@ -260,7 +260,7 @@ final class EnsoWebShellController: NSObject, ObservableObject {
     (() => {
       if (window.__ensoNative) return;
       const post = (msg) => window.webkit?.messageHandlers?.ensoNative?.postMessage(msg);
-      let openCb = null, controlCb = null, binaryCb = null, closeCb = null;
+      let openCb = null, controlCb = null, binaryCb = null, closeCb = null, diagCb = null;
       const scanResolvers = new Map();
       let scanSeq = 0;
       const pushResolvers = new Map();
@@ -272,6 +272,7 @@ final class EnsoWebShellController: NSObject, ObservableObject {
         onControl: (id, text) => { try { controlCb && controlCb(id, text); } catch {} },
         onBinary: (id, b64) => { try { binaryCb && binaryCb(id, b64); } catch {} },
         onClose: (id, code, reason) => { try { closeCb && closeCb(id, code, reason); } catch {} },
+        onDiag: (id, detail) => { try { diagCb && diagCb(id, detail); } catch {} },
         resolveScan: (cbId, value) => {
           const fn = scanResolvers.get(cbId);
           scanResolvers.delete(cbId);
@@ -304,6 +305,7 @@ final class EnsoWebShellController: NSObject, ObservableObject {
         onQuicControl: (cb) => { controlCb = cb; },
         onQuicBinary: (cb) => { binaryCb = cb; },
         onQuicClose: (cb) => { closeCb = cb; },
+        onQuicDiag: (cb) => { diagCb = cb; },
         scanQr: () => new Promise((resolve) => {
           const cbId = 's-' + (++scanSeq);
           scanResolvers.set(cbId, resolve);
@@ -350,14 +352,20 @@ extension EnsoWebShellController: WKScriptMessageHandler {
         switch type {
         case "quic-open":
             guard let params = body["params"] as? [String: Any],
-                  let id = params["id"] as? String,
-                  let host = params["host"] as? String,
-                  let portNum = params["port"] as? Int,
+                  let id = params["id"] as? String
+            else { return }
+            guard let host = params["host"] as? String,
+                  let portNum = (params["port"] as? NSNumber)?.intValue,
                   let port = UInt16(exactly: portNum),
                   let pairId = params["pairId"] as? String,
                   let role = params["role"] as? String,
                   let token = params["token"] as? String
-            else { return }
+            else {
+                if let idLit = Self.jsStringLiteral(id) {
+                    evalJS("window.__ensoNativeInternal?.onClose(\(idLit), 1006, \"bad-params\");")
+                }
+                return
+            }
             let alpn = (params["alpn"] as? String) ?? QuicFrameCodec.alpn
             let relayEpoch = params["relayEpoch"] as? String
             let sinceRelaySeq = (params["sinceRelaySeq"] as? NSNumber)?.uint64Value
@@ -509,6 +517,16 @@ extension EnsoWebShellController: QuicRelayConnectionDelegate {
                   let reasonLit = Self.jsStringLiteral(reason)
             else { return }
             self.evalJS("window.__ensoNativeInternal?.onClose(\(idLit), \(code), \(reasonLit));")
+        }
+    }
+
+    nonisolated func quicConnection(_ id: String, didUpdateDiagnostic detail: String) {
+        Task { @MainActor [weak self] in
+            guard let self,
+                  let idLit = Self.jsStringLiteral(id),
+                  let detailLit = Self.jsStringLiteral(detail)
+            else { return }
+            self.evalJS("window.__ensoNativeInternal?.onDiag(\(idLit), \(detailLit));")
         }
     }
 }

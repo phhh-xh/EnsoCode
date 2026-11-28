@@ -26,6 +26,8 @@ export interface RelaySocketLike {
   removeEventListener?(type: string, listener: (event: any) => void): void;
   /** 底层传输类型，用于诊断展示（缺省为 'ws'） */
   readonly transportKind?: RelayTransportKind;
+  /** 底层传输协商或回落明细（如 QUIC 握手耗时、探活失败或 NWError 原因），供诊断排查 */
+  readonly transportDetail?: string;
 }
 
 export interface RelayConnectParams {

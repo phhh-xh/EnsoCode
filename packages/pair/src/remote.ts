@@ -31,6 +31,8 @@ export interface RemotePrefetchResult {
   type: 'rpc-prefetch';
   cid: string;
   items: RemotePrefetchResultItem[];
+  /** true 表示后面还有次级预取帧（核心首屏读先发、重历史读后发）；缺省/false 表示收尾 */
+  more?: true;
 }
 
 export type RemoteToHost =

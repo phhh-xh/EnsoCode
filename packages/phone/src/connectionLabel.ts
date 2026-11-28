@@ -12,9 +12,10 @@ export const CONN_STATE_LABEL: Record<ConnState, string> = {
 
 export function formatOnlineConnectionLabel(
   transport: 'relay' | 'direct',
-  rttMs: number | null
+  rttMs: number | null,
+  relayKind?: 'ws' | 'quic' | null
 ): string {
-  const via = transport === 'direct' ? '直连' : '中继';
+  const via = transport === 'direct' ? '直连' : relayKind === 'quic' ? '中继 · QUIC' : '中继';
   const rtt = formatRttMs(rttMs);
   return rtt ? `已连接 · ${via} · ${rtt}` : `已连接 · ${via}`;
 }

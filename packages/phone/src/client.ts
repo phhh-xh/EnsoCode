@@ -257,6 +257,7 @@ export class PairClient {
 
   diagnostics(): {
     relayKind: string | null;
+    relayDetail: string | null;
     hostV2: boolean;
     relayEpoch: string | null;
     relaySeq: number;
@@ -264,6 +265,7 @@ export class PairClient {
   } {
     return {
       relayKind: this.ws?.transportKind ?? null,
+      relayDetail: this.ws?.transportDetail ?? null,
       hostV2: this.hostFrameV2,
       relayEpoch: this.relayEpoch,
       relaySeq: this.relaySeq,

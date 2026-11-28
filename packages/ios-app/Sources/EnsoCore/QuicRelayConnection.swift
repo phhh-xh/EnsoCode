@@ -33,6 +33,11 @@ public protocol QuicRelayConnectionDelegate: AnyObject {
     func quicConnection(_ id: String, didReceiveControlText text: String)
     func quicConnection(_ id: String, didReceiveBinaryFrame data: Data, lane: EnsoQuicLane)
     func quicConnection(_ id: String, didCloseWithCode code: Int, reason: String)
+    func quicConnection(_ id: String, didUpdateDiagnostic detail: String)
+}
+
+public extension QuicRelayConnectionDelegate {
+    func quicConnection(_ id: String, didUpdateDiagnostic detail: String) {}
 }
 
 /// 基于 Apple 原生 `Network.framework` (`NWProtocolQUIC` + `NWMultiplexGroup` + `NWConnectionGroup`)
@@ -141,9 +146,12 @@ public final class QuicRelayConnection: @unchecked Sendable {
     private func handleGroupState(_ state: NWConnectionGroup.State) {
         switch state {
         case .ready:
+            delegate?.quicConnection(config.id, didUpdateDiagnostic: "group-ready")
             if !streamsOpened {
                 openAllStreams()
             }
+        case .waiting(let error):
+            delegate?.quicConnection(config.id, didUpdateDiagnostic: "group-waiting:\(error)")
         case .failed(let error):
             finishClose(code: 1006, reason: "quic-failed:\(error)")
         case .cancelled:
@@ -156,14 +164,12 @@ public final class QuicRelayConnection: @unchecked Sendable {
     private func openAllStreams() {
         guard !closed, !streamsOpened, let connGroup = group else { return }
         streamsOpened = true
-        let makeStream = { () -> NWConnection? in
-            let opts = NWProtocolQUIC.Options(alpn: [self.config.alpn])
-            opts.direction = .bidirectional
-            return NWConnection(from: connGroup, using: opts)
-        }
-        guard let ctrl = makeStream(),
-              let bulk = makeStream(),
-              let control = makeStream()
+        // iOS 16-18 的 NWConnectionGroup 禁止在 NWConnection(from:using:) 里再传入带 alpn 的新
+        // NWProtocolQUIC.Options（会触发 failed to clone from flow -> POSIXErrorCode 50 Network is down）。
+        // 组级 NWParameters 已声明 bidirectional 与 alpn，直接 NWConnection(from: connGroup) 复用即可。
+        guard let ctrl = NWConnection(from: connGroup),
+              let bulk = NWConnection(from: connGroup),
+              let control = NWConnection(from: connGroup)
         else {
             finishClose(code: 1006, reason: "quic-open-streams-failed")
             return
@@ -185,6 +191,11 @@ public final class QuicRelayConnection: @unchecked Sendable {
         stream.stateUpdateHandler = { [weak self] state in
             guard let self, !self.closed else { return }
             switch state {
+            case .waiting(let error):
+                self.delegate?.quicConnection(
+                    self.config.id,
+                    didUpdateDiagnostic: "stream-\(kind.rawValue)-waiting:\(error)"
+                )
             case .ready:
                 switch kind {
                 case .control:
@@ -294,8 +305,20 @@ public final class QuicRelayConnection: @unchecked Sendable {
     }
 
     private func receiveExact(length: Int, from stream: NWConnection, kind: EnsoQuicStreamKind) {
+        var buffer = Data()
+        buffer.reserveCapacity(length)
+        receiveChunk(remaining: length, buffer: buffer, from: stream, kind: kind)
+    }
+
+    private func receiveChunk(
+        remaining: Int,
+        buffer: Data,
+        from stream: NWConnection,
+        kind: EnsoQuicStreamKind
+    ) {
         guard !closed else { return }
-        stream.receive(minimumIncompleteLength: length, maximumLength: length) { [weak self] content, _, isComplete, error in
+        let maxRead = min(remaining, 65_536)
+        stream.receive(minimumIncompleteLength: 1, maximumLength: maxRead) { [weak self] content, _, isComplete, error in
             guard let self, !self.closed else { return }
             if let error {
                 if kind != .bulk {
@@ -303,21 +326,34 @@ public final class QuicRelayConnection: @unchecked Sendable {
                 }
                 return
             }
-            guard let body = content, body.count == length else {
+            guard let chunk = content, !chunk.isEmpty else {
                 if isComplete && kind != .bulk {
                     self.finishClose(code: 1000, reason: "eof-body")
                 }
                 return
             }
+            var nextBuffer = buffer
+            nextBuffer.append(chunk)
+            let left = remaining - chunk.count
+            if left > 0 {
+                if isComplete {
+                    if kind != .bulk {
+                        self.finishClose(code: 1000, reason: "eof-body")
+                    }
+                    return
+                }
+                self.receiveChunk(remaining: left, buffer: nextBuffer, from: stream, kind: kind)
+                return
+            }
             switch kind {
             case .control:
-                if let text = String(data: body, encoding: .utf8) {
+                if let text = String(data: nextBuffer, encoding: .utf8) {
                     self.delegate?.quicConnection(self.config.id, didReceiveControlText: text)
                 }
             case .ctrl:
-                self.delegate?.quicConnection(self.config.id, didReceiveBinaryFrame: body, lane: .ctrl)
+                self.delegate?.quicConnection(self.config.id, didReceiveBinaryFrame: nextBuffer, lane: .ctrl)
             case .bulk:
-                self.delegate?.quicConnection(self.config.id, didReceiveBinaryFrame: body, lane: .bulk)
+                self.delegate?.quicConnection(self.config.id, didReceiveBinaryFrame: nextBuffer, lane: .bulk)
             }
             self.receiveNextFrame(from: stream, kind: kind)
         }
